@@ -1,10 +1,10 @@
 ---
-title: "Dashboard API: aggregated student data endpoint"
+title: "Dashboard API: aggregated student progress endpoint"
 sidebarTitle: "Dashboard"
-description: "GET /api/v1/dashboard returns the authenticated student's active tasks sorted by deadline, pending micro-objectives grouped by task, and the last 30 fatigue scores in chronological order."
+description: "Single endpoint returning active tasks by deadline, nested micro-objectives, and up to 30 fatigue records most recent first. Requires JWT authentication."
 ---
 
-The Dashboard endpoint is MindFlow's single-call aggregation surface. Rather than requiring the frontend to chain multiple requests for tasks, micro-objectives, and fatigue history, `GET /api/v1/dashboard` fetches all three datasets in a single parallel database query and returns them under a unified response envelope. This keeps the initial page load fast and makes polling straightforward.
+The Dashboard endpoint is MindFlow's single-call aggregation surface. Rather than requiring the frontend to chain multiple requests for tasks, micro-objectives, and fatigue history, `GET /api/v1/dashboard` fetches all three datasets in a single parallel database query and returns them under a unified response envelope. Tasks are sorted by deadline ascending, micro-objectives by creation time, and fatigue records are ordered by most recent first. This keeps the initial page load fast and makes polling straightforward.
 
 <Note>
   All data returned is strictly scoped to the authenticated student. No task, micro-objective, or fatigue record from any other account will ever appear in the response — the queries are filtered by `studentId` extracted from the JWT at the service layer.
@@ -14,7 +14,7 @@ The Dashboard endpoint is MindFlow's single-call aggregation surface. Rather tha
 
 ## GET /api/v1/dashboard
 
-Returns the authenticated student's aggregated dashboard data: active tasks (with their nested active micro-objectives) sorted by deadline, and the student's last 30 fatigue scores ordered chronologically.
+Returns the authenticated student's aggregated dashboard data: active tasks (with their nested active micro-objectives) sorted by deadline ascending, and the student's last 30 fatigue scores ordered by `recordedAtUtc` descending (most recent first).
 
 **Authentication:** JWT Bearer
 
@@ -31,7 +31,7 @@ Returns the authenticated student's aggregated dashboard data: active tasks (wit
 </ResponseField>
 
 <ResponseField name="data.fatigueHistory" type="array">
-  Up to 30 fatigue records for the student, ordered by `recordedAtUtc` descending as returned from the database. Contains one entry per fatigue score submission. If the student has never submitted a score, this array is empty.
+  Up to 30 fatigue records for the student, ordered by `recordedAtUtc` descending (most recent first). Contains one entry per fatigue score submission. If the student has never submitted a score, this array is empty.
 </ResponseField>
 
 <ResponseField name="error" type="null">

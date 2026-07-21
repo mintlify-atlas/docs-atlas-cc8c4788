@@ -1,10 +1,10 @@
 ---
-title: "MindFlow REST API reference overview"
+title: "MindFlow REST API — complete endpoint reference guide"
 sidebarTitle: "Overview"
-description: "All MindFlow API endpoints sit under /api/v1/ and return a consistent JSON envelope with data, error, and status fields. JWT authentication is required for all protected routes."
+description: "All 12 MindFlow API endpoints sit under /api/v1/ and return a JSON envelope with data, error, and status fields. JWT is required for all protected routes."
 ---
 
-The MindFlow REST API is a NestJS-powered HTTP service that gives client applications full access to the platform's student management, task tracking, adaptive EMA sessions, and notification features. Every response — whether it signals success or failure — is wrapped in a predictable three-field JSON envelope, so your error-handling logic stays uniform across all 13 endpoints.
+The MindFlow REST API is a NestJS-powered HTTP service that gives client applications full access to the platform's student management, task tracking, and adaptive EMA sessions. Every response — whether it signals success or failure — is wrapped in a predictable three-field JSON envelope, so your error-handling logic stays uniform across all 12 endpoints.
 
 ## Base URL
 
@@ -91,7 +91,7 @@ All other routes are protected by a global `JwtAuthGuard`. Requests to protected
 
 ## Endpoint index
 
-The table below lists all 13 endpoints exposed by the MindFlow API.
+The table below lists all 12 endpoints exposed by the MindFlow API.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
@@ -107,7 +107,6 @@ The table below lists all 13 endpoints exposed by the MindFlow API.
 | POST | /api/v1/sessions/:sessionId/fatigue | JWT | Submit a fatigue score |
 | GET | /api/v1/sessions | JWT | Get session history |
 | GET | /api/v1/dashboard | JWT | Get aggregated dashboard data |
-| GET | /api/v1/notifications | JWT | Get notification log |
 
 ## Explore by resource
 

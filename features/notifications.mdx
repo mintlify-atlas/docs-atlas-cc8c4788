@@ -1,7 +1,7 @@
 ---
-title: "Contextual task reminders and notification limits"
+title: "MindFlow notification reminders and frequency limits"
 sidebarTitle: "Notifications"
-description: "MindFlow's Notification Service sends deadline reminders when tasks are due within 24 hours, caps at 3 notifications per student per day, and suppresses alerts during active EMA sessions."
+description: "Hourly cron sends deadline reminders for tasks due within 24 hours, capped at 3 per student per day, with suppression during active EMA sessions."
 ---
 
 MindFlow's Notification Service keeps students aware of upcoming deadlines without overwhelming them. It runs as a scheduled cron job every hour, scans for tasks whose deadlines fall within the next 24 hours, and dispatches a reminder if the task still has pending micro-objectives. To prevent notification fatigue, the service enforces a hard cap of 3 dispatched notifications per student per 24-hour window. When a student is in the middle of an active EMA session, all deadline reminders are suppressed for the duration of that session — avoiding interruption at the most cognitively sensitive moment. Every notification event, whether sent, failed, or suppressed, is recorded in the `notification_logs` table with a UTC timestamp and a delivery status.
@@ -64,32 +64,14 @@ Every notification event — dispatched, failed, or suppressed — produces **ex
 ```typescript
 interface INotificationService {
   dispatchReminders(): Promise<void>; // cron job every hour
-  suppressDuringSession(studentId: string): boolean;
+  suppressDuringSession(studentId: string): Promise<boolean>;
   getDispatchCount(studentId: string, windowHours: number): Promise<number>;
 }
 ```
 
 - **`dispatchReminders()`** — the main entry point, decorated with `@Cron(CronExpression.EVERY_HOUR)`. Finds all eligible tasks and processes each student-task pair.
-- **`suppressDuringSession(studentId)`** — queries the `sessions` table for an active session (`is_active = true`). Returns `true` if one exists, meaning notifications should be suppressed.
+- **`suppressDuringSession(studentId)`** — queries the `sessions` table for an active session (`is_active = true`). Returns a `Promise<boolean>` that resolves to `true` if one exists, meaning notifications should be suppressed.
 - **`getDispatchCount(studentId, windowHours)`** — counts `sent` records in the `notification_logs` table within the given rolling window. Used to enforce the 3-per-day cap.
-
-## Retrieving notification history
-
-```
-GET /api/v1/notifications
-```
-
-Returns the notification log history for the authenticated student. The `studentId` is extracted from the JWT — no query parameters are needed.
-
-```typescript
-// Fetch the student's notification log history
-const response = await fetch("https://api.mindflow.app/api/v1/notifications", {
-  headers: { "Authorization": `Bearer ${token}` },
-});
-
-const { data } = await response.json();
-// data is NotificationLog[] for the authenticated student
-```
 
 ## Processing flow per task
 
@@ -121,5 +103,5 @@ Call the internal `deliver(studentId, taskId)` method. In production this connec
 </Steps>
 
 <Note>
-  The Notification Service runs as a scheduled cron job every hour — it does not push to clients in real time. Notifications are processed in batch on the server. The `GET /api/v1/notifications` endpoint allows the frontend to poll for the latest log state and display notification history to the student on demand.
+  The Notification Service runs as a scheduled cron job every hour — it does not push to clients in real time. Notifications are processed in batch on the server. Notification logs are an internal audit trail and are not exposed through a public API endpoint.
 </Note>

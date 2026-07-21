@@ -35,8 +35,8 @@ npm run test:cov --workspace @mindflow/backend
 npm run test:watch --workspace @mindflow/backend
 ```
 
-```bash Backend — sequential (for integration tests)
-# Runs all backend tests in a single process — required for DB integration tests
+```bash Backend — sequential
+# Runs all backend tests in a single process (useful for reproducible CI output)
 npm test --workspace @mindflow/backend -- --runInBand
 ```
 
@@ -51,7 +51,7 @@ Jest discovers tests by filename pattern. Each category uses a distinct suffix s
 | **Unit tests** | `*.service.spec.ts`, `*.controller.spec.ts` | Single service or controller in isolation with mocked dependencies |
 | **Property-based tests** | `*.property.spec.ts` | fast-check properties run with `numRuns ≥ 5` (100 for non-async) |
 | **Smoke tests** | `*.smoke.spec.ts` | Static config validation — Dockerfile, Prisma schema, `compose.yml` |
-| **Integration tests** | `integration/*.latency.spec.ts` | DB writer latency over 10 real writes; requires live PostgreSQL |
+| **Integration tests** | `integration/*.latency.spec.ts` | DB writer latency over 10 mocked writes; validates Prisma pool config statically |
 
 ## Running a single spec file
 
@@ -90,14 +90,18 @@ npx jest --testPathPattern="auth"
 ## Environment setup for integration tests
 
 <Note>
-Integration and latency tests connect to a real PostgreSQL database. You must set the `DATABASE_URL` environment variable before running them:
+The latency spec (`__tests__/integration/db-writer.latency.spec.ts`) uses a mocked `PrismaService` — no real PostgreSQL connection is required. If `DATABASE_URL` is available in the environment the Prisma pool config test will read it directly; if it is absent, the test falls back to validating the documented reference URL string.
 
 ```bash
-export DATABASE_URL="postgresql://mindflow:password@localhost:5432/mindflow_dev"
-npm test --workspace @mindflow/backend -- --runInBand --testPathPattern="latency"
+npx jest --testPathPattern="latency"
 ```
 
-If `DATABASE_URL` is not set, the Prisma client will throw a connection error at module initialization and the test will fail immediately.
+To also validate pool settings against a live database URL, set `DATABASE_URL` before running:
+
+```bash
+export DATABASE_URL="postgresql://mindflow:password@localhost:5432/mindflow_dev?connection_limit=10&pool_timeout=20"
+npx jest --testPathPattern="latency"
+```
 </Note>
 
 ## Smoke tests are DB-independent
@@ -109,19 +113,19 @@ Smoke tests validate **static configuration artifacts** only — they do not con
 npx jest --testPathPattern="smoke"
 ```
 
-Smoke tests check: `docker-compose.yml` service definitions, absence of hardcoded secrets in the backend container config, Prisma schema pool settings (`min: 2, max: 10`), and the presence of the NestJS vs FastAPI comparison section in the design document.
+Smoke tests check: `compose.yml` service definitions, absence of hardcoded secrets in the backend container config, Prisma schema pool settings (`connection_limit=10`, `pool_timeout`), and the `mindflow_pgdata` named volume declaration.
 </Note>
 
 ## Parallel vs. sequential execution
 
 <Tip>
-Always pass `--runInBand` when running integration or latency tests. By default, Jest runs spec files in parallel worker processes — multiple workers competing for the same PostgreSQL connection pool can exhaust connections, cause spurious timeout failures, and produce misleading latency measurements.
+All backend tests — including the latency integration tests — use in-memory `PrismaService` mocks and are safe to run in parallel (the default Jest behavior). Use `--runInBand` only if you need fully deterministic, reproducible CI output or are debugging a test ordering issue.
 
 ```bash
 npm test --workspace @mindflow/backend -- --runInBand
 ```
 
-Unit and PBT tests are safe to run in parallel (the default) because they use in-memory Prisma mocks and never open a real database connection.
+Unit, PBT, smoke, and integration tests never open a real database connection, so parallel execution does not risk connection pool exhaustion.
 </Tip>
 
 ## What a passing PBT run looks like
@@ -144,13 +148,8 @@ The output tells you:
 
 ## Latency test behavior
 
-<Warning>
-Latency tests measure **actual database write latency** — the time for 10 consecutive `DBWriterService` operations against a live PostgreSQL instance. The design specification targets an average of 2–3 seconds over 10 writes under normal load conditions.
+<Note>
+Latency tests (`__tests__/integration/db-writer.latency.spec.ts`) measure the time for 10 consecutive `DBWriterService.writeSession()` calls through an **in-memory mocked `PrismaService`** that resolves immediately. Because there is no real I/O, average latency will be close to 0 ms — well under the 3 000 ms threshold required by Requirement 3.3. The purpose is to verify that the `DBWriterService` code path introduces no inherent latency overhead and that the service returns structurally correct results for all 10 calls.
 
-These tests **may flake** on:
-- Very slow CI runners with limited CPU or I/O resources
-- PostgreSQL instances under heavy concurrent load
-- Cold Docker volumes where the first write incurs extra overhead
-
-If you see consistent failures above 3 seconds in CI, check the runner's available resources and ensure the PostgreSQL container has warmed up (run a health-check query before the test suite starts). Do **not** lower the latency threshold — it reflects a real product requirement (Requirements 3.3, 7.1).
-</Warning>
+The same spec also validates Prisma connection pool configuration statically (pool `connection_limit=10`, `pool_timeout=20`), without opening any real database connection.
+</Note>

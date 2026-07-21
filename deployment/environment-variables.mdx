@@ -1,7 +1,7 @@
 ---
-title: "Environment variables reference for MindFlow"
+title: "MindFlow environment variables configuration reference"
 sidebarTitle: "Environment Variables"
-description: "Complete reference for all environment variables used by the MindFlow backend and frontend, with descriptions, required/optional status, and example values."
+description: "Complete reference for all MindFlow environment variables, with descriptions, required status, and example values for backend and frontend."
 ---
 
 MindFlow uses environment variables to configure every deployment-specific value — database credentials, secret keys, service URLs, and feature flags. Secrets are never committed to the repository. Instead, each developer copies an example file locally, and production deployments read variables directly from the hosting provider's secret vault. The `.env` files on disk are listed in `.gitignore` and must never be pushed.

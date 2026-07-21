@@ -1,7 +1,7 @@
 ---
 title: "Student dashboard: tasks, objectives, and fatigue history"
 sidebarTitle: "Dashboard"
-description: "The MindFlow dashboard aggregates active tasks sorted by deadline, pending micro-objectives grouped by task, and a 30-session fatigue score time-series chart."
+description: "MindFlow dashboard returns active tasks by deadline, pending micro-objectives by task, and a 30-session fatigue history chart in a single API call."
 ---
 
 The MindFlow dashboard is the student's command centre — a single API call returns everything needed to render the full study overview. Active tasks sorted by deadline, pending micro-objectives grouped under their parent tasks, and a chronological fatigue history are all returned together, eliminating the need for multiple round-trips on page load. The frontend uses Next.js App Router with SWR for data fetching and Recharts to render the fatigue time-series chart. When a student marks a micro-objective complete, the dashboard reflects the change within 2 seconds without requiring a full page reload.
@@ -38,7 +38,7 @@ This endpoint requires a valid Bearer token. The `studentId` is read from the JW
     All micro-objectives where `is_completed = false` and `is_audit_only = false`, grouped by their parent task.
   </Card>
   <Card title="Fatigue history" icon="chart-line">
-    The last 30 fatigue records for the student, ordered chronologically by `recordedAtUtc` ascending — ready to be fed into a Recharts time-series chart.
+    The last 30 fatigue records for the student, ordered by `recordedAtUtc` descending (most recent first). Reverse the array before passing it to a time-series chart if you need oldest-first ordering.
   </Card>
   <Card title="Empty state" icon="inbox">
     If the student has no sessions yet, the `fatigueHistory` array is empty and the frontend displays an invitation to start their first EMA session.
@@ -65,7 +65,7 @@ const tasks = data.tasks;
 // Pending micro-objectives (flat array, each carries taskId for grouping)
 const microObjectives = data.microObjectives;
 
-// Last 30 fatigue scores ordered chronologically ASC
+// Last 30 fatigue scores ordered by recordedAtUtc DESC (most recent first)
 const fatigueHistory = data.fatigueHistory;
 ```
 
@@ -93,7 +93,7 @@ The `microObjectives` array is the flat union of all micro-objectives embedded i
 
 ## Fatigue history chart
 
-The `fatigueHistory` array contains the last 30 `FatigueRecord` entries for the student, ordered by `recordedAtUtc` ascending (oldest first). This ordering is intentional — it matches the chronological left-to-right axis expected by Recharts' `LineChart` or `AreaChart` components.
+The `fatigueHistory` array contains the last 30 `FatigueRecord` entries for the student, ordered by `recordedAtUtc` descending (most recent first). If your chart library expects oldest-first ordering — as Recharts' `LineChart` and `AreaChart` do — reverse the array before mapping it to chart data.
 
 ```typescript
 interface FatigueRecord {
@@ -111,7 +111,8 @@ interface FatigueRecord {
 import { LineChart, Line, XAxis, YAxis, Tooltip } from "recharts";
 
 function FatigueChart({ history }: { history: FatigueRecord[] }) {
-  const chartData = history.map((record) => ({
+  // fatigueHistory is returned DESC (most recent first); reverse for left-to-right chart axis
+  const chartData = [...history].reverse().map((record) => ({
     date: new Date(record.recordedAtUtc).toLocaleDateString(),
     score: record.fatigueScore,
   }));

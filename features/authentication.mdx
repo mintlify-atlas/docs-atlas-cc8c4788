@@ -1,7 +1,7 @@
 ---
-title: "Authenticate users with JWT in MindFlow"
+title: "MindFlow student registration and JWT authentication"
 sidebarTitle: "Authentication"
-description: "MindFlow uses stateless JWT authentication with bcrypt password hashing, a 24-hour token expiry, and a global NestJS guard with explicit public route exceptions."
+description: "Stateless JWT auth with bcrypt (12 rounds), 24-hour token expiry, and a global NestJS guard. Two public routes; all others require a Bearer token."
 ---
 
 MindFlow's Auth Service handles all identity operations for student accounts. When a student registers, their password is hashed with bcrypt at 12 rounds before being stored in PostgreSQL — the plaintext password never touches the database. On login, the service verifies the password hash and issues a signed JWT using HS256 that expires after exactly 24 hours. Every other endpoint in the API requires a valid Bearer token; two routes — `POST /api/v1/auth/register` and `POST /api/v1/auth/login` — are explicitly excluded from the global `JwtAuthGuard` via the `@Public()` decorator.

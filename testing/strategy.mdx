@@ -22,8 +22,8 @@ MindFlow's test suite is built around a dual strategy that combines example-base
 | Type | Focus | DB required | Tooling |
 |---|---|---|---|
 | **Unit** | Single NestJS service in isolation with mocks | No | Jest 29 + ts-jest, @nestjs/testing |
-| **Property-based (PBT)** | Universal invariants over random inputs | No (in-memory Prisma mock) | Jest 29 + fast-check 3.x |
-| **Integration** | DB writer latency, real Prisma queries | Yes (`DATABASE_URL`) | Jest 29 + ts-jest, `--runInBand` |
+| **Property-based (PBT)** | Universal invariants over random inputs | No (in-memory Prisma mock) | Jest 29 + fast-check ^3.15.0 |
+| **Integration** | DB writer latency, Prisma pool config (mocked) | No | Jest 29 + ts-jest |
 | **Smoke** | Docker config, Prisma schema, route structure | No | Jest 29 + ts-jest |
 | **Route / API** | Versioning invariant, response envelope | No (minimal NestJS test app) | Jest 29 + supertest |
 
@@ -56,20 +56,18 @@ Key property files:
 
 ### 3. Integration tests
 
-Integration tests target the `DBWriterService` with a real PostgreSQL connection and measure actual write latency. The design specification targets an **average of 2–3 seconds over 10 consecutive writes** under normal load conditions.
+Integration tests target the `DBWriterService` and measure write latency and connection pool configuration. The design specification targets an **average of 2–3 seconds over 10 consecutive writes** under normal load conditions.
 
-- `db-writer/__tests__/integration/db-writer.latency.spec.ts` — measures 10 sequential write operations and asserts average latency ≤ 3 s
-- Requires `DATABASE_URL` environment variable pointing to a live PostgreSQL instance
-- Must run with `--runInBand` to avoid parallel connection contention
+- `__tests__/integration/db-writer.latency.spec.ts` — measures 10 sequential write operations via a mocked `PrismaService` and asserts average latency ≤ 3 s; also statically validates Prisma pool settings (`connection_limit=10`, `pool_timeout`)
+- Mocked `PrismaService` resolves immediately — no real database connection is required
+- Can run in parallel with other test suites; `--runInBand` is not mandatory for this file
 
 ### 4. Smoke tests
 
 Smoke tests are entirely DB-independent and verify static configuration artifacts:
 
-- `docker-compose.yml` defines `backend` and `db` service containers
-- Backend container reads `JWT_SECRET`, `AI_SERVICE_API_KEY`, and `DATABASE_URL` exclusively from environment variables — no hardcoded values
-- Prisma schema connection pool is configured with `min: 2, max: 10`
-- Design document contains the NestJS vs FastAPI comparison required by Requirement 9
+- `__tests__/docker-config.smoke.spec.ts` — validates `compose.yml`: backend and db services defined, no hardcoded `JWT_SECRET`/`AI_SERVICE_API_KEY`/`DATABASE_URL` values, `mindflow_pgdata` volume declared
+- `__tests__/prisma-schema.smoke.spec.ts` — validates `prisma/schema.prisma`: all six Prisma models present, UUID primary keys, FK relations, SmallInt constraints, `connection_limit` pool setting in `prisma.config.ts`
 
 ### 5. Route and API tests
 
@@ -84,7 +82,7 @@ Two property spec files bootstrap a minimal NestJS application with the real `Gl
 |---|---|---|
 | **Jest** | 29 | Test runner for all suites |
 | **ts-jest** | latest | TypeScript compilation for Jest |
-| **fast-check** | 3.x | Property-based testing library |
+| **fast-check** | ^3.15.0 | Property-based testing library |
 | **@nestjs/testing** | same as NestJS | `Test.createTestingModule()` for DI isolation |
 | **supertest** | latest | HTTP-level assertions against a live `INestApplication` |
 
@@ -112,7 +110,7 @@ Auth and notification PBT suites use a lower `numRuns: 5` because each iteration
 | `AuthService` | `auth.service.spec.ts` | `auth.property.spec.ts` | — |
 | `TaskService` | `task.service.spec.ts` | — | — |
 | `SessionService` | `session.service.spec.ts` | — | — |
-| `NotificationService` | — | `notification.property.spec.ts` | — |
+| `NotificationService` | `notification.service.spec.ts` | `notification.property.spec.ts` | — |
 | `TaskDecomposerService` | `task-decomposer.service.spec.ts` | — | — |
 | `DBWriterService` | `db-writer.service.spec.ts` | — | `db-writer.latency.spec.ts` |
 | API Gateway | — | `api-gateway.property.spec.ts` | `route-versioning.property.spec.ts` |

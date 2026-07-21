@@ -1,7 +1,7 @@
 ---
-title: "Auth API: register and login endpoints"
+title: "Auth API: student account register and login endpoints"
 sidebarTitle: "Auth"
-description: "POST /api/v1/auth/register creates a student account. POST /api/v1/auth/login returns a 24-hour JWT. Both endpoints are public and require no authorization header."
+description: "Register with POST /api/v1/auth/register, then log in to receive a signed 24-hour JWT. Both auth routes are public — no Authorization header required."
 ---
 
 The auth endpoints are the entry point for every MindFlow student. Registration persists a new account with a bcrypt-hashed password (12 rounds), enforcing email uniqueness across the system. Login validates credentials and returns a signed JWT that grants access to all protected routes for 24 hours. Both endpoints are public — no `Authorization` header is needed or accepted.
@@ -41,7 +41,7 @@ A `201` response confirms the account was created. No token is issued at registr
 
 ```json
 {
-  "data": { "message": "Registration successful." },
+  "data": { "message": "Cuenta creada exitosamente. Ya puedes iniciar sesión." },
   "error": null,
   "status": 201
 }

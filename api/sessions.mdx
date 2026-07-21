@@ -1,7 +1,7 @@
 ---
 title: "Sessions API: EMA session and fatigue score endpoints"
 sidebarTitle: "Sessions"
-description: "Start EMA sessions, submit fatigue scores (1–5), and retrieve session history. Scores outside the valid range are rejected at the DTO level before any database write."
+description: "Start EMA sessions, submit fatigue scores (1–5), and fetch session history. Out-of-range scores are rejected by the DTO before any database write occurs."
 ---
 
 The Sessions API drives MindFlow's core adaptive loop. A student starts an EMA (Ecological Momentary Assessment) session, which opens a window for submitting a self-reported fatigue score on the 1–5 scale. If the submitted score is 4 or higher, the backend automatically triggers the AI task decomposer to break the student's active tasks into bite-sized micro-objectives of no more than 25 minutes each. All three endpoints require JWT authentication, and every response follows the standard `{ data, error, status }` envelope.
@@ -189,7 +189,7 @@ Submits the student's self-reported fatigue score for an active session. The sco
 | `401 Unauthorized` | JWT is missing or expired. |
 
 <Note>
-  Score validation is strict. Even `5.0` (a float that happens to equal an integer) is rejected with `422` because the DTO uses `@IsInt()` — only JavaScript values of type `number` with no fractional part pass validation. The `@Type(() => Number)` transformer coerces query-string numbers, but a JSON body value of `4.5` or `"4"` will never be accepted.
+  Score validation is strict. The DTO uses `@IsInt()` — only whole integer values pass validation. The `@Type(() => Number)` transformer coerces incoming values to a number first, so a JSON body value of `5.0` (which coerces to `5`) is accepted, but `4.5` (a non-integer), `"4"` (a string that does not coerce cleanly), or `null` are all rejected with `422`.
 </Note>
 
 <Warning>

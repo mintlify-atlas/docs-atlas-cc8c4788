@@ -12,7 +12,7 @@ MindFlow is built on a classic **three-tier client-server architecture**: a Reac
 
 The repository root is the npm workspace root. Workspaces are declared in `package.json` as `apps/*` and `packages/*`:
 
-```
+```text
 pf_pruebasAseguramientoCalid_SDD/
 ├── apps/
 │   ├── frontend/          # Next.js 14 + TypeScript application
@@ -31,16 +31,16 @@ pf_pruebasAseguramientoCalid_SDD/
 ```
 
 <CardGroup cols={2}>
-  <Card title="apps/frontend" icon="browser">
+  <Card title="apps/frontend" icon="display">
     **Next.js 14 + TypeScript.** Uses the App Router for server and client components, Auth.js for session management, SWR for data fetching, and Shadcn/ui + Tailwind CSS for the component library. Third-party animation libraries are isolated behind the Wrapper Pattern so that the core UI always renders without them.
   </Card>
   <Card title="apps/backend" icon="server">
     **NestJS 10 + Node.js.** Exposes a versioned REST API under `/api/v1/`. Uses Prisma 7 as the ORM, JWT for stateless authentication, Helmet for HTTP security headers, and fast-check for property-based testing. The `main.ts` bootstrap includes a 5-retry connection loop for PostgreSQL.
   </Card>
-  <Card title="packages/shared" icon="package">
+  <Card title="packages/shared" icon="box">
     **@mindflow/shared.** A lightweight TypeScript package containing the domain interfaces (`Session`, `Task`, `FatigueRecord`, `MicroObjective`, etc.) and utility types shared between the frontend and backend. Must be built before either app — `npm run build --workspace @mindflow/shared`.
   </Card>
-  <Card title="compose.yml" icon="docker">
+  <Card title="compose.yml" icon="cube">
     **Docker Compose (development only).** Defines three services — `db` (PostgreSQL 18 Alpine), `backend`, and `frontend` — on an isolated internal network. Only the frontend exposes a port externally. The `mindflow_pgdata` named volume persists database data across container restarts.
   </Card>
 </CardGroup>
@@ -93,7 +93,7 @@ The NestJS application is composed of eight focused modules. Each module encapsu
   <Card title="DbWriterModule" icon="database">
     The single repository layer for all database writes. Uses Prisma's type-safe, parameterised query builder — no raw SQL concatenation anywhere in the codebase. Retries failed writes once after 500 ms. Operates with a connection pool of min=2 / max=10 connections.
   </Card>
-  <Card title="SessionSerializerModule" icon="brackets-curly">
+  <Card title="SessionSerializerModule" icon="code">
     Provides lossless JSON serialisation and deserialisation of `Session` and `FatigueRecord` objects. Guarantees type preservation — `Fatigue_Score` must remain a JSON integer, never a string or float. Rejects payloads with missing required fields or type mismatches without constructing any partial object.
   </Card>
 </CardGroup>
@@ -170,7 +170,7 @@ The Prisma schema defines **six models** mapping to six PostgreSQL tables. All p
 
 ### Entity overview
 
-```
+```text
 students ──────────┬── sessions ──────── fatigue_records
     │              │        │
     ├── tasks ─────┤        └── micro_objectives
@@ -213,7 +213,7 @@ The Next.js 14 frontend uses the **App Router** exclusively. Pages and layouts a
 
 **Wrapper Pattern** — any third-party animation or visual-enhancement library is isolated behind a thin React wrapper component located in `apps/frontend/src/components/wrappers/`. Wrappers are loaded with Next.js `dynamic()` and `{ ssr: false }` so they never block server-side rendering. Each wrapper exposes a minimal, MindFlow-specific prop interface and provides a static Tailwind fallback if the library fails to load:
 
-```
+```text
 apps/frontend/src/components/wrappers/
   SlotTextWrapper.tsx    ← fatigue score slot animation
   ThemeToggleWrapper.tsx ← dark mode toggle transition

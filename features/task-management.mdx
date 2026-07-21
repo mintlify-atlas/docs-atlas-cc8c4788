@@ -1,7 +1,7 @@
 ---
-title: "Manage academic tasks and micro-objectives"
+title: "Academic task CRUD and micro-objectives in MindFlow"
 sidebarTitle: "Task Management"
-description: "Create, update, and soft-delete academic tasks scoped to the authenticated student. Micro-objectives are linked to tasks and preserved in the audit log after deletion."
+description: "Create, update, and soft-delete student-scoped tasks. Micro-objectives link to tasks and are preserved in the audit log after logical deletion."
 ---
 
 MindFlow's Task Module gives each student a private workspace for their academic workload. Every task is owned by the authenticated student — the JWT in the request identifies the owner, and the service enforces that ownership on every operation. Attempting to read, update, or delete a task that belongs to another student returns `403 Forbidden` without revealing whether the task exists. Tasks are never permanently removed from the database; deletion is always logical, preserving the audit trail of any micro-objectives that were generated during EMA sessions.

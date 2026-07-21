@@ -1,7 +1,7 @@
 ---
 title: "Set up MindFlow for local development without Docker"
 sidebarTitle: "Local Development"
-description: "Run the MindFlow backend and frontend locally using Node.js workspaces, with a local or remote PostgreSQL instance and environment variables loaded from .env files."
+description: "Run the MindFlow backend and frontend locally using Node.js workspaces, with a local or remote PostgreSQL instance and .env configuration."
 ---
 
 Running MindFlow locally without Docker gives you the fastest iteration cycle — hot-reload works for both the NestJS backend and the Next.js frontend, and you can attach a debugger directly to either process. This guide walks you through cloning the monorepo, installing dependencies, configuring environment variables, and starting each application in development mode.
@@ -51,7 +51,7 @@ Before you begin, make sure the following are available on your machine:
     | `AI_SERVICE_API_KEY` | API key for the LLM provider if the Task Decomposer feature is enabled |
 
     <Note>
-      `DATABASE_URL` must point to a PostgreSQL instance that is already running and reachable before you start the backend. The backend will retry the connection up to five times (with a 5-second pause between attempts), but the database must be accessible at startup.
+      `DATABASE_URL` must point to a PostgreSQL instance that is already running and reachable before you start the backend.
     </Note>
   </Step>
 

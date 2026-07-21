@@ -1,121 +1,101 @@
 ---
-title: "Notifications API: dispatch log endpoint"
+title: "Notifications: internal cron-driven reminder service"
 sidebarTitle: "Notifications"
-description: "GET /api/v1/notifications returns the authenticated student's notification log, including delivery status and timestamps for all task deadline reminders."
+description: "MindFlow notifications run as an internal hourly cron job with no public HTTP endpoint. Covers how reminders are dispatched, suppressed, and rate-limited."
 ---
 
-The Notifications API exposes a read-only view of MindFlow's automated reminder system. The backend runs a cron job every hour that scans for tasks with deadlines within the next 24 hours, checks for pending micro-objectives, and dispatches reminders subject to session-suppression and frequency-cap rules. This endpoint lets students (and frontend dashboards) inspect the full dispatch log — delivery statuses, attempt counts, and timestamps — without triggering any new dispatch themselves.
+MindFlow's notification system runs entirely as a server-side background process. The `NotificationService` executes an hourly cron job that scans for upcoming task deadlines and dispatches reminders to eligible students. There is no public HTTP endpoint for notifications — the `NotificationModule` registers only a service provider, with no controller. Frontend dashboards learn about notification activity through the `fatigueHistory` and task fields already available on `GET /api/v1/dashboard`.
 
 <Note>
-  This is a **read-only** endpoint. Notifications are triggered exclusively by the hourly cron job running inside the backend service. There is no API call that initiates a notification dispatch.
+  **No public endpoint exists for notifications.** The `NotificationModule` contains only a `NotificationService` (cron job) and no controller. There is no `GET /api/v1/notifications` or any other HTTP route under `/api/v1/notifications`. Notification dispatch is triggered exclusively by the backend scheduler.
 </Note>
 
 ---
 
-## GET /api/v1/notifications
+## How the cron job works
 
-Returns the full notification log for the authenticated student. Each entry in the log corresponds to a single notification event for a specific task, including its current delivery status, the number of dispatch attempts made, and the UTC timestamp of the most recent attempt.
+The `@Cron(CronExpression.EVERY_HOUR)` decorator on `dispatchReminders()` causes NestJS's built-in scheduler (registered via `ScheduleModule.forRoot()` in `AppModule`) to invoke the method once per hour. Each run follows this flow:
 
-**Authentication:** JWT Bearer
+1. **Find eligible tasks** — queries all tasks where `isDeleted = false`, `deadline` falls within the next 24 hours, and at least one micro-objective has `isCompleted = false` and `isAuditOnly = false`.
+2. **Per student–task pair** — calls `processTaskNotification(studentId, taskId, now)` for each eligible task.
+3. **Session suppression check** — if the student has an active EMA session (`isActive = true`), the notification is suppressed and a `NotificationLog` entry is persisted with `status = 'suppressed'` and `attemptCount = 0`.
+4. **Frequency cap check** — counts `sent` notifications for the student within the last 24-hour rolling window. If the count is already **3 or more**, the run is skipped without creating a new log entry.
+5. **Retry resolution** — looks for an existing `NotificationLog` entry for the same student–task pair with `status IN ('pending', 'failed')` and `attemptCount < 3`. If one exists, it is updated rather than a new entry being created.
+6. **Dispatch attempt** — calls `deliver(studentId, taskId)`. On success the log entry is updated to `status = 'sent'`. On failure, `attemptCount` is incremented; once `attemptCount` reaches **3** the entry is set to `status = 'failed'` and no further retries occur.
 
-**Request Body:** None
+---
 
-### Response — 200 OK
+## NotificationLog database record
 
-<ResponseField name="data" type="array">
-  Array of `NotificationLog` records for the authenticated student. Ordered by `dispatchedAtUtc` descending (most recent first).
-</ResponseField>
+Every notification event — whether sent, suppressed, pending, or failed — is persisted to the `notification_logs` table via `PrismaService`. The schema for each record is:
 
-<ResponseField name="error" type="null">
-  Always `null` on success.
-</ResponseField>
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` (UUID) | Primary key, server-generated. |
+| `studentId` | `string` (UUID) | The student this notification targets. |
+| `taskId` | `string` (UUID) | The task that triggered the reminder. |
+| `status` | `string` | One of `pending`, `sent`, `failed`, or `suppressed`. See the status reference below. |
+| `attemptCount` | `integer` | Number of dispatch attempts made. Range: `0` (suppressed) to `3` (max attempts exhausted). |
+| `dispatchedAtUtc` | `DateTime` | UTC timestamp of the most recent dispatch attempt or suppression event. |
+| `updatedAt` | `DateTime` | Auto-updated by Prisma on every write. |
 
-<ResponseField name="status" type="integer">
-  `200`
-</ResponseField>
-
-Each item in the `data` array contains:
-
-<ResponseField name="data[].id" type="string">
-  UUID of the notification log entry.
-</ResponseField>
-
-<ResponseField name="data[].taskId" type="string">
-  UUID of the task that triggered this notification.
-</ResponseField>
-
-<ResponseField name="data[].status" type="string">
-  Delivery status of this notification. One of `pending`, `sent`, or `failed`. See the status reference table below.
-</ResponseField>
-
-<ResponseField name="data[].attemptCount" type="integer">
-  The number of dispatch attempts made for this notification entry. Ranges from `0` (suppressed before any attempt) to `3` (maximum attempts exhausted).
-</ResponseField>
-
-<ResponseField name="data[].dispatchedAtUtc" type="string">
-  ISO 8601 UTC timestamp of the most recent dispatch attempt or suppression event.
-</ResponseField>
-
-```json Example Response
+```json Example NotificationLog record (internal)
 {
-  "data": [
-    {
-      "id": "e5f6a7b8-c9d0-1234-efab-567890123456",
-      "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
-      "status": "sent",
-      "attemptCount": 1,
-      "dispatchedAtUtc": "2025-07-25T08:00:00.000Z"
-    },
-    {
-      "id": "f6a7b8c9-d0e1-2345-fabc-678901234567",
-      "taskId": "4a8b2c1d-3e4f-5a6b-7c8d-9e0f1a2b3c4d",
-      "status": "failed",
-      "attemptCount": 3,
-      "dispatchedAtUtc": "2025-07-24T10:00:00.000Z"
-    },
-    {
-      "id": "a7b8c9d0-e1f2-3456-abcd-789012345678",
-      "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
-      "status": "pending",
-      "attemptCount": 1,
-      "dispatchedAtUtc": "2025-07-23T08:00:00.000Z"
-    }
-  ],
-  "error": null,
-  "status": 200
+  "id": "e5f6a7b8-c9d0-1234-efab-567890123456",
+  "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+  "status": "sent",
+  "attemptCount": 1,
+  "dispatchedAtUtc": "2025-07-25T08:00:00.000Z",
+  "updatedAt": "2025-07-25T08:00:00.000Z"
 }
 ```
 
-### Status Values
+### Status values
 
 | Status | Meaning |
 |--------|---------|
-| `pending` | A dispatch attempt was made but has not yet succeeded. The cron job will retry on its next run, up to the 3-attempt maximum. |
+| `pending` | A dispatch was attempted but has not yet succeeded. The cron job will retry on its next run, provided `attemptCount < 3`. |
 | `sent` | The notification was delivered successfully. |
 | `failed` | All 3 consecutive delivery attempts failed. No further retries will be made for this log entry. |
+| `suppressed` | Dispatch was skipped because the student had an active EMA session at the time the cron ran. The attempt does not count toward the frequency cap. |
 
 <Warning>
-  A `failed` status is final. Once a `NotificationLog` entry reaches `attemptCount = 3` with no successful delivery, it is permanently marked `failed` and the cron job will not retry it. A new log entry may be created in a future cron run if the task's deadline is still within the 24-hour window and the student has not yet reached the daily frequency cap.
+  A `failed` status is final. Once a `NotificationLog` entry reaches `attemptCount = 3` with no successful delivery, the cron job will not retry it. A new log entry may be created in a future cron run if the task is still within the 24-hour deadline window and the student has not exceeded the daily frequency cap.
 </Warning>
 
-### Dispatch Rules (Cron Job Behaviour)
+---
 
-The following rules govern when the cron job creates or updates notification log entries. Understanding them helps interpret the log data returned by this endpoint.
+## Dispatch rules reference
 
-**Eligibility:** A task is eligible for a notification if `is_deleted = false`, its `deadline` falls within the next 24 hours, and it has at least one micro-objective where `is_completed = false` and `is_audit_only = false`.
+| Rule | Detail |
+|------|--------|
+| **Cron frequency** | Every hour (`CronExpression.EVERY_HOUR`). |
+| **Deadline window** | Tasks with `deadline` within the next **24 hours** from the time of the cron run. |
+| **Eligibility filter** | Task must have `isDeleted = false` and at least one micro-objective with `isCompleted = false` and `isAuditOnly = false`. |
+| **Session suppression** | If the student has `isActive = true` on any session, the notification is suppressed and logged — no delivery is attempted. |
+| **Frequency cap** | Maximum **3** `sent` notifications per student per 24-hour rolling window. Suppressed notifications do not count toward this cap. |
+| **Max retry attempts** | **3** per student–task pair per frequency window. After 3 failed attempts the entry is permanently marked `failed`. |
+| **Persistence SLA** | Every notification event is written to `notification_logs` in **< 3 seconds**. |
 
-**Session suppression:** If the student has an active EMA session (`is_active = true`) at the time the cron job runs, the notification is suppressed and logged with `status = 'suppressed'` and `attemptCount = 0`. Suppressed entries do not appear in this endpoint's response (they are stored in the database for internal auditing but filtered from the student-facing log).
+---
 
-**Frequency cap:** The cron job tracks how many `sent` notifications a student has received within the current 24-hour rolling window. Once that count reaches **3**, no further notifications are created or dispatched for that student until the window resets — not even for different tasks.
+## Extending the delivery mechanism
 
-**Retry logic:** For a given student–task pair, if a log entry exists with `status = 'pending'` or `status = 'failed'` and `attemptCount < 3`, the next cron run increments the attempt count and tries again. If `attemptCount` reaches `3` without a successful delivery, the entry is set to `status = 'failed'` and no further retries occur.
+The `deliver(studentId, taskId)` private method is the integration point for adding real push, email, or WebSocket delivery. In the current implementation it logs the event and returns `true`. To add a real channel:
 
-<Note>
-  Notifications are suppressed for any student who has an active EMA session (`is_active = true`). This prevents interrupting the fatigue-assessment flow with deadline reminders. Once the session ends, normal dispatch resumes on the next hourly cron run.
-</Note>
+1. Inject the external notification provider (e.g. a mailer or push service) into `NotificationService`.
+2. Replace the log-and-return-true body of `deliver()` with a call to that provider.
+3. Let exceptions propagate — the caller already catches failures and handles the `attemptCount` increment.
 
-### Errors
-
-| Status | Condition |
-|--------|-----------|
-| `401 Unauthorized` | JWT is missing or expired. |
+```typescript Example — adding an email channel
+// In NotificationService.deliver()
+private async deliver(studentId: string, taskId: string): Promise<boolean> {
+  try {
+    await this.mailerService.sendDeadlineReminder(studentId, taskId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+```

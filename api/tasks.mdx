@@ -1,7 +1,7 @@
 ---
-title: "Tasks API: CRUD and micro-objectives endpoints"
+title: "Tasks API: task and micro-objective CRUD endpoints"
 sidebarTitle: "Tasks"
-description: "REST endpoints for creating, listing, updating, and soft-deleting academic tasks and their AI-generated micro-objectives. All endpoints require JWT authentication."
+description: "Create, list, update, and soft-delete academic tasks. Manage AI-generated micro-objectives per task. All endpoints require a valid JWT Bearer token."
 ---
 
 The Tasks API is the backbone of MindFlow's academic workload management. It lets authenticated students create tasks with deadlines, update or soft-delete them, and interact with the AI-generated micro-objectives that are produced automatically when high fatigue is detected. Every write operation is ownership-checked against the JWT — a student can only read and modify their own tasks.
@@ -343,7 +343,7 @@ Updates a single micro-objective. The server verifies that the parent task belon
 </ParamField>
 
 <ParamField body="estimatedMinutes" type="integer">
-  Updated time estimate in minutes. Must be a positive integer no greater than `25`.
+  Updated time estimate in minutes. Must be a positive integer. The database enforces an upper bound of 25 minutes per micro-objective.
 </ParamField>
 
 <ParamField body="isCompleted" type="boolean">

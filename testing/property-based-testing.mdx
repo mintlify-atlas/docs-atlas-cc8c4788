@@ -173,7 +173,7 @@ it('P23 — property: FOR ALL registered routes, path starts with /api/v1/', () 
 
   <Accordion title="EMA / Session properties (9–11)">
     **Property 9 — Fatigue Score Range [1, 5]**
-    For all `Fatigue_Score` values persisted in the `fatigue_scores` table, the stored `score` is an integer in `[1, 5]`. Any attempt to persist a value outside this range or of a non-integer type is rejected by the validation layer before reaching the database.
+    For all `Fatigue_Score` values persisted in the `fatigue_records` table, the stored `score` is an integer in `[1, 5]`. Any attempt to persist a value outside this range or of a non-integer type is rejected by the validation layer before reaching the database.
     _Validates: Requirement 3.2_
 
     **Property 10 — Referential Integrity of Fatigue_Score Metadata**

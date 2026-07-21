@@ -1,7 +1,7 @@
 ---
 title: "Adaptive task decomposition with AI micro-objectives"
 sidebarTitle: "Task Decomposer"
-description: "When fatigue is high (score ≥ 4), the Task Decomposer calls an external LLM to break tasks into 2–7 micro-objectives of 25 minutes or less per task."
+description: "When fatigue score is ≥ 4, MindFlow calls an LLM to break tasks into 2–7 micro-objectives of 25 minutes or less and persists them via Prisma."
 ---
 
 The Task Decomposer is the AI-powered core of MindFlow's adaptive study system. When a student's EMA session produces a fatigue score of 4 or 5, the decomposer automatically breaks each selected active task into a set of small, actionable micro-objectives — each estimated to take 25 minutes or less. This reduces the cognitive friction of starting a daunting task by replacing it with a series of immediately achievable steps. When fatigue is low (score ≤ 3), no decomposition occurs and tasks are presented in their original form.
