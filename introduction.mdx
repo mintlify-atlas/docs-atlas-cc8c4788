@@ -1,0 +1,112 @@
+---
+title: "MindFlow: adaptive AI platform for academic focus"
+sidebarTitle: "Introduction"
+description: "MindFlow is an AI-powered web platform that fights academic procrastination through real-time fatigue assessment and automatic task decomposition into micro-objectives."
+---
+
+MindFlow is an AI-powered web platform built to help students overcome academic procrastination. Rather than relying on willpower alone, MindFlow meets students where they are: it continuously measures their mental fatigue through a conversational chatbot and adapts the complexity of their workload in real time. When cognitive load is high, the platform automatically breaks complex academic tasks into small, immediately actionable micro-objectives — reducing the friction that causes procrastination and increasing the probability of taking that first step. MindFlow is designed for university students who find themselves paralysed by large assignments and need a structured, low-pressure way to re-engage with their work.
+
+## How it works
+
+### Ecological Momentary Assessment (EMA)
+
+At the heart of MindFlow sits the **EMA_Bot**, a lightweight chatbot that applies Ecological Momentary Assessment — a research methodology that captures psychological states in the moment rather than relying on retrospective recall. Every time a student starts a session, the EMA_Bot prompts them to self-report their current mental fatigue on a simple scale from **1** (fully alert) to **5** (cognitively exhausted). This single interaction takes less than ten seconds and produces a `Fatigue_Score` that drives every subsequent decision the platform makes.
+
+<Note>
+  Only integer values between 1 and 5 are accepted. Any value outside that range — including decimals, strings, or null — is rejected and the student is re-prompted without recording the invalid entry.
+</Note>
+
+### Task Decomposer
+
+Once the EMA_Bot has a valid `Fatigue_Score`, the **Task Decomposer** module takes over. The threshold is deliberately simple:
+
+- **Fatigue_Score ≤ 3** — the student's tasks are presented in their original form without any modification.
+- **Fatigue_Score ≥ 4** — every active task the student selects is automatically sent to an external LLM service, which decomposes it into between **2 and 7 micro-objectives**, each estimated at **≤ 25 minutes** of work.
+
+Micro-objectives are atomic, actionable units that together cover the full scope of the original task. They are persisted to the database, linked to both the originating task and the current EMA session, and displayed on the dashboard so the student can tick them off one by one. If the AI service is unreachable, the API returns HTTP 502 and the task is shown in its original form as a safe fallback.
+
+---
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="lock">
+    Secure student registration and login backed by bcrypt-hashed passwords and stateless JWT tokens with a 24-hour expiry. Duplicate email registration is rejected with HTTP 409, and invalid credentials never reveal which field is wrong.
+  </Card>
+  <Card title="Task Management" icon="list-check">
+    Full CRUD for academic tasks with name, optional description, and deadline. Tasks are always returned sorted by deadline ascending. Deletion is logical (`is_deleted = true`) so associated micro-objectives are preserved in the audit log.
+  </Card>
+  <Card title="EMA Sessions" icon="comments">
+    Each session captures a `Fatigue_Score` via the EMA_Bot chatbot. Session records are persisted with UTC timestamps and full referential integrity to the owning student and fatigue records.
+  </Card>
+  <Card title="Task Decomposer" icon="scissors">
+    When fatigue is high (score ≥ 4), the AI decomposer generates 2–7 micro-objectives per task, each capped at 25 minutes. Cardinality and duration constraints are enforced and verified through property-based tests.
+  </Card>
+  <Card title="Dashboard" icon="chart-line">
+    A single-page view aggregating all active tasks sorted by deadline, pending micro-objectives grouped by parent task, and a time-series chart of the student's last 30 fatigue scores. Data is strictly isolated per student account.
+  </Card>
+  <Card title="Notifications" icon="bell">
+    A cron-based Notification Service dispatches deadline reminders when a task has pending micro-objectives due within 24 hours. Notifications are suppressed during active EMA sessions and capped at 3 per student per 24-hour window to prevent notification fatigue.
+  </Card>
+</CardGroup>
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| **Frontend** | Next.js 14 + TypeScript, Auth.js, Shadcn/ui, Tailwind CSS |
+| **Backend** | NestJS 10, Node.js, TypeScript |
+| **Database ORM** | Prisma 7 + PostgreSQL |
+| **Authentication** | JWT (HS256, 24 h expiry), bcrypt (12 rounds) |
+| **Testing** | Jest + fast-check (property-based testing) |
+| **Infrastructure** | Docker Compose (development), multi-stage Dockerfiles |
+| **Shared types** | `@mindflow/shared` npm workspace package |
+
+<Info>
+  NestJS was chosen over FastAPI because the entire stack — frontend and backend — shares a single TypeScript codebase. Domain interfaces defined once in `@mindflow/shared` are consumed by both the Next.js frontend and the NestJS API, eliminating type drift and simplifying CI/CD.
+</Info>
+
+---
+
+## Glossary
+
+<AccordionGroup>
+  <Accordion title="EMA_Bot">
+    The chatbot component that applies Ecological Momentary Assessment to collect the student's cognitive state. It presents a fatigue prompt at the start of every session and enforces strict input validation before passing the score downstream.
+  </Accordion>
+  <Accordion title="Fatigue_Score">
+    A self-reported integer in the range **[1, 5]** representing the student's current level of mental fatigue. It is the single signal that determines whether the Task Decomposer activates. Values outside this range are rejected at the validation layer before any database write occurs.
+  </Accordion>
+  <Accordion title="Task_Decomposer">
+    The AI module responsible for splitting complex academic tasks into micro-objectives when `Fatigue_Score ≥ 4`. It calls an external LLM service over HTTP, enforces cardinality constraints (2–7 objectives), and stores all results linked to the originating task and session.
+  </Accordion>
+  <Accordion title="Micro_Objective">
+    An atomic, actionable unit of work generated by the Task Decomposer. Each micro-objective has a text description (`content`), an `estimated_minutes` value of no more than 25, and a boolean `is_completed` flag that the student toggles from the dashboard.
+  </Accordion>
+  <Accordion title="Session">
+    A bounded period of active interaction between an authenticated student and the EMA_Bot. A session begins with `POST /api/v1/sessions`, captures one or more fatigue records, and ends when the student exits. All micro-objectives generated during a session are linked to it for historical traceability.
+  </Accordion>
+  <Accordion title="Student">
+    A registered user with an academic role. Each student owns their tasks, sessions, fatigue records, and notification logs. Resource isolation is enforced at the API layer — a student can never read or modify another student's data.
+  </Accordion>
+  <Accordion title="DB_Writer">
+    The repository layer inside the NestJS backend responsible for all database writes. It uses Prisma's parameterised queries exclusively, enforces foreign key constraints, retries failed writes once after 500 ms, and operates with a connection pool of min=2 / max=10.
+  </Accordion>
+  <Accordion title="Auth_Service">
+    The NestJS module that handles student registration, login, and JWT validation. It signs tokens with HS256 using the `JWT_SECRET` environment variable and exposes two public endpoints: `POST /api/v1/auth/register` and `POST /api/v1/auth/login`.
+  </Accordion>
+  <Accordion title="API_Gateway">
+    The HTTP entry point of the NestJS backend. It routes requests to the correct module, enforces the global `JwtAuthGuard`, applies the `ValidationPipe` (HTTP 422 for invalid payloads), and wraps all responses — including errors — in the standard envelope `{ data, error, status }`.
+  </Accordion>
+  <Accordion title="Notification_Service">
+    A cron-based NestJS module that dispatches deadline reminders to students. It checks for tasks with pending micro-objectives due within 24 hours, suppresses notifications during active sessions, enforces the 3-per-day frequency cap, and logs every dispatch attempt to the `notification_logs` table with a UTC timestamp and delivery status.
+  </Accordion>
+  <Accordion title="Dashboard">
+    The main frontend view that aggregates a student's active tasks (sorted by deadline), pending micro-objectives grouped by parent task, and a chronological time-series chart of the last 30 fatigue scores. It shows an empty-state prompt if the student has no sessions yet.
+  </Accordion>
+  <Accordion title="Session_Serializer">
+    The component responsible for lossless JSON serialisation and deserialisation of `Session` and `FatigueRecord` objects. It preserves all field types — crucially, `Fatigue_Score` must serialise as a JSON integer, never a string or float — and rejects payloads with missing fields or type mismatches before constructing any partial object.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,147 @@
+---
+title: "Auth API: register and login endpoints"
+sidebarTitle: "Auth"
+description: "POST /api/v1/auth/register creates a student account. POST /api/v1/auth/login returns a 24-hour JWT. Both endpoints are public and require no authorization header."
+---
+
+The auth endpoints are the entry point for every MindFlow student. Registration persists a new account with a bcrypt-hashed password (12 rounds), enforcing email uniqueness across the system. Login validates credentials and returns a signed JWT that grants access to all protected routes for 24 hours. Both endpoints are public — no `Authorization` header is needed or accepted.
+
+---
+
+## POST /api/v1/auth/register
+
+Creates a new student account. The email is normalized to lowercase and trimmed before storage. Passwords are never stored in plain text — only the bcrypt hash is persisted.
+
+**Method:** `POST`  
+**Path:** `/api/v1/auth/register`  
+**Auth:** None
+
+### Request body
+
+<ParamField body="email" type="string" required>
+  A valid email address. Must conform to standard email format. The value is trimmed and lowercased before being stored or checked for uniqueness.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The account password. Must be at least 8 characters long. Stored exclusively as a bcrypt hash — never returned by any endpoint.
+</ParamField>
+
+### Request example
+
+```json
+{
+  "email": "student@university.edu",
+  "password": "SecurePass123!"
+}
+```
+
+### Success response — 201 Created
+
+A `201` response confirms the account was created. No token is issued at registration — call `POST /api/v1/auth/login` to obtain a JWT.
+
+```json
+{
+  "data": { "message": "Registration successful." },
+  "error": null,
+  "status": 201
+}
+```
+
+<ResponseField name="data.message" type="string">
+  A confirmation message indicating the account was created successfully.
+</ResponseField>
+
+### Error responses
+
+**409 Conflict** — the email address is already associated with an existing account:
+
+```json
+{
+  "data": null,
+  "error": "Ya existe una cuenta registrada con ese correo electrónico.",
+  "status": 409
+}
+```
+
+**422 Unprocessable Entity** — the request body failed DTO validation (email is malformed, or password is fewer than 8 characters). The `error` field lists all validation failures joined by `; `:
+
+```json
+{
+  "data": null,
+  "error": "El email debe ser una dirección de correo válida.; La contraseña debe tener al menos 8 caracteres.",
+  "status": 422
+}
+```
+
+<Note>
+  The global `ValidationPipe` is configured with `whitelist: true` and `forbidNonWhitelisted: true`. Any extra fields in the request body are silently stripped (whitelisted), and the `errorHttpStatusCode` is set to `422` — not the default `400`.
+</Note>
+
+---
+
+## POST /api/v1/auth/login
+
+Authenticates an existing student and returns a signed JWT. If the provided email does not exist in the database, or if the password does not match the stored bcrypt hash, a generic `401` is returned. The error message intentionally does not reveal which field is incorrect.
+
+**Method:** `POST`  
+**Path:** `/api/v1/auth/login`  
+**Auth:** None
+
+### Request body
+
+<ParamField body="email" type="string" required>
+  The email address used during registration. Trimmed and lowercased before lookup.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The account password. Must be non-empty. Compared against the stored bcrypt hash using `bcrypt.compare`.
+</ParamField>
+
+### Request example
+
+```json
+{
+  "email": "student@university.edu",
+  "password": "SecurePass123!"
+}
+```
+
+### Success response — 200 OK
+
+```json
+{
+  "data": { "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+  "error": null,
+  "status": 200
+}
+```
+
+<ResponseField name="data.token" type="string">
+  A signed HS256 JWT. Expires 24 hours after issuance (`exp = iat + 86400`). Pass this value in the `Authorization: Bearer <token>` header on all protected requests.
+</ResponseField>
+
+### Error responses
+
+**401 Unauthorized** — credentials are invalid. The same error is returned whether the email does not exist or the password is wrong:
+
+```json
+{
+  "data": null,
+  "error": "Credenciales inválidas.",
+  "status": 401
+}
+```
+
+**422 Unprocessable Entity** — the request body failed DTO validation (email is malformed, or password field is empty):
+
+```json
+{
+  "data": null,
+  "error": "El email debe ser una dirección de correo válida.",
+  "status": 422
+}
+```
+
+<Note>
+  The `401` error message `"Credenciales inválidas."` is intentionally generic. The service uses the same `UnauthorizedException` instance regardless of whether the email was not found or the password did not match. This prevents user enumeration attacks where a different message for each case would reveal whether a given email is registered in the system.
+</Note>

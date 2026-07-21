@@ -1,0 +1,139 @@
+---
+title: "Authenticate users with JWT in MindFlow"
+sidebarTitle: "Authentication"
+description: "MindFlow uses stateless JWT authentication with bcrypt password hashing, a 24-hour token expiry, and a global NestJS guard with explicit public route exceptions."
+---
+
+MindFlow's Auth Service handles all identity operations for student accounts. When a student registers, their password is hashed with bcrypt at 12 rounds before being stored in PostgreSQL — the plaintext password never touches the database. On login, the service verifies the password hash and issues a signed JWT using HS256 that expires after exactly 24 hours. Every other endpoint in the API requires a valid Bearer token; two routes — `POST /api/v1/auth/register` and `POST /api/v1/auth/login` — are explicitly excluded from the global `JwtAuthGuard` via the `@Public()` decorator.
+
+## How authentication works
+
+<Steps>
+
+### Student registers
+
+The student submits an email and a password (minimum 8 characters) to `POST /api/v1/auth/register`. The Auth Service normalises the email to lowercase, checks for duplicates, hashes the password with bcrypt (12 rounds), and persists the new student record.
+
+### Auth Service returns confirmation
+
+On success the endpoint returns `201 Created` with a confirmation message. If the email is already registered, the service returns `409 Conflict` without creating a duplicate account.
+
+### Student logs in
+
+The student submits their credentials to `POST /api/v1/auth/login`. The Auth Service looks up the student by email and runs `bcrypt.compare` against the stored hash. If either field is incorrect, a generic `401 Unauthorized` is returned — no field-level disclosure.
+
+### JWT is issued
+
+On success the endpoint returns `200 OK` with `{ "token": "<jwt>" }`. The token is signed with HS256 using the server-side `JWT_SECRET` environment variable and carries a 24-hour expiry (`exp = iat + 86400`).
+
+### Client attaches the token
+
+Every subsequent request to a protected endpoint must include the token in the `Authorization` header as a Bearer scheme. The global `JwtAuthGuard` verifies the token and attaches the decoded `StudentPayload` (containing `studentId` and `email`) to the request object.
+
+### Token expires
+
+After 24 hours the token is no longer valid. The API Gateway returns `401 Unauthorized` and the client must re-authenticate via `POST /api/v1/auth/login` to obtain a new token.
+
+</Steps>
+
+## Public routes
+
+The `@Public()` decorator marks a handler or controller class so the `JwtAuthGuard` skips verification. Only two routes carry this decorator:
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/api/v1/auth/register` | Create a new student account |
+| `POST` | `/api/v1/auth/login` | Authenticate and receive a JWT |
+
+All other routes require a valid Bearer token.
+
+## Registration
+
+Send a `POST` request to `/api/v1/auth/register` with a JSON body containing `email` and `password`.
+
+**Request body**
+
+| Field | Type | Rules |
+|-------|------|-------|
+| `email` | `string` | Valid email format, case-insensitive |
+| `password` | `string` | Minimum 8 characters |
+
+```typescript
+// Register a new student account
+const response = await fetch("https://api.mindflow.app/api/v1/auth/register", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    email: "ada@university.edu",
+    password: "Secur3Pass!",
+  }),
+});
+
+const data = await response.json();
+// 201 → { "data": { "message": "Cuenta creada exitosamente. Ya puedes iniciar sesión." }, "error": null, "status": 201 }
+// 409 → { "data": null, "error": "Ya existe una cuenta registrada con ese correo electrónico.", "status": 409 }
+```
+
+## Login
+
+Send a `POST` request to `/api/v1/auth/login`. On success the response contains the signed JWT.
+
+```typescript
+// Authenticate and retrieve a JWT
+const response = await fetch("https://api.mindflow.app/api/v1/auth/login", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    email: "ada@university.edu",
+    password: "Secur3Pass!",
+  }),
+});
+
+const { data } = await response.json();
+const token: string = data.token;
+// Store the token securely — see the note below
+```
+
+## Using the JWT
+
+Include the token in the `Authorization` header of every protected request using the `Bearer` scheme:
+
+```typescript
+// Make an authenticated request
+const response = await fetch("https://api.mindflow.app/api/v1/tasks", {
+  method: "GET",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+});
+```
+
+<Note>
+  Never store the JWT in `localStorage` in production. Use an `HttpOnly` cookie or a secure in-memory store to reduce XSS exposure. The token carries the student's identity and is valid for a full 24 hours.
+</Note>
+
+## Error responses
+
+| Status | Condition | Description |
+|--------|-----------|-------------|
+| `201 Created` | Registration success | Student account created; confirmation message returned |
+| `200 OK` | Login success | `{ token }` returned in the response body |
+| `401 Unauthorized` | Invalid credentials or expired token | Generic message — no field-level disclosure of which credential was wrong |
+| `409 Conflict` | Duplicate email on registration | Email is already registered in the system |
+| `422 Unprocessable Entity` | Validation failure | Missing or malformed fields (e.g. email without `@`, password shorter than 8 characters) |
+
+<CardGroup cols={2}>
+  <Card title="Register endpoint" icon="user-plus">
+    `POST /api/v1/auth/register` — creates a new student account. No token required.
+  </Card>
+  <Card title="Login endpoint" icon="key">
+    `POST /api/v1/auth/login` — returns a 24-hour JWT on valid credentials.
+  </Card>
+  <Card title="bcrypt hashing" icon="lock">
+    Passwords are stored as bcrypt hashes with a cost factor of 12. The plaintext password is never persisted or returned.
+  </Card>
+  <Card title="Global JWT guard" icon="shield">
+    `JwtAuthGuard` is applied globally. Routes without `@Public()` always require a valid Bearer token.
+  </Card>
+</CardGroup>

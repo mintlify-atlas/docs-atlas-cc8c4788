@@ -1,0 +1,118 @@
+---
+title: "Adaptive task decomposition with AI micro-objectives"
+sidebarTitle: "Task Decomposer"
+description: "When fatigue is high (score ≥ 4), the Task Decomposer calls an external LLM to break tasks into 2–7 micro-objectives of 25 minutes or less per task."
+---
+
+The Task Decomposer is the AI-powered core of MindFlow's adaptive study system. When a student's EMA session produces a fatigue score of 4 or 5, the decomposer automatically breaks each selected active task into a set of small, actionable micro-objectives — each estimated to take 25 minutes or less. This reduces the cognitive friction of starting a daunting task by replacing it with a series of immediately achievable steps. When fatigue is low (score ≤ 3), no decomposition occurs and tasks are presented in their original form.
+
+## The decomposition threshold
+
+The `shouldDecompose` function is the single decision point that controls whether decomposition runs:
+
+```typescript
+shouldDecompose(fatigueScore: number): boolean {
+  return fatigueScore >= 4;
+}
+```
+
+| Fatigue score | `shouldDecompose` returns | Result |
+|---------------|--------------------------|--------|
+| 1 | `false` | Task shown in original form |
+| 2 | `false` | Task shown in original form |
+| 3 | `false` | Task shown in original form |
+| 4 | `true` | Task Decomposer invoked |
+| 5 | `true` | Task Decomposer invoked |
+
+## Micro-objective constraints
+
+Every successful decomposition call produces between 2 and 7 micro-objectives. The Task Decomposer validates these constraints against the LLM response before persisting anything:
+
+- **Cardinality**: between 2 and 7 micro-objectives per task — never fewer, never more.
+- **Duration**: `estimated_minutes` must be a positive integer ≤ 25 for every micro-objective.
+- **Coverage**: the union of all micro-objective content must cover the full semantic scope of the original task description — no aspect of the task may be omitted.
+- **Content**: every micro-objective must have non-empty, actionable text.
+
+## The ITaskDecomposer interface
+
+```typescript
+interface ITaskDecomposer {
+  shouldDecompose(fatigueScore: number): boolean; // true if score >= 4
+  decompose(task: Task, sessionId: string): Promise<MicroObjective[]>;
+}
+```
+
+The `decompose` method takes the task object and the current `sessionId`, calls the external AI service, validates the response, persists the generated micro-objectives, and returns the full list of saved records.
+
+## Calling the external AI service
+
+The Task Decomposer sends an HTTP `POST` request to the configured `AI_SERVICE_URL` (defaulting to the OpenAI-compatible `/chat/completions` endpoint) using the `AI_SERVICE_API_KEY` for authentication. The prompt instructs the LLM to return a strict JSON object:
+
+```json
+{
+  "micro_objectives": [
+    { "content": "Read pages 1–15 of the assigned chapter", "estimated_minutes": 20 },
+    { "content": "Write a 150-word summary of the key argument", "estimated_minutes": 15 }
+  ]
+}
+```
+
+The model is called with `temperature: 0.3` and `response_format: { type: "json_object" }` to maximise determinism and ensure a parseable response.
+
+## Validation pipeline
+
+After receiving the LLM response the service runs a three-step validation pipeline before any data is written to the database:
+
+<Steps>
+
+### Parse and structure check
+
+The raw API response is parsed from JSON. If `micro_objectives` is missing, empty, or not an array, the service throws `BadGatewayException` immediately.
+
+### Cardinality validation
+
+The array length must be in `[2, 7]`. If the LLM returns fewer than 2 or more than 7 items, the service throws `BadGatewayException` with a descriptive message.
+
+### Duration and content validation
+
+Each micro-objective is checked: `estimated_minutes` must be a number between 1 and 25 (inclusive), and `content` must be a non-empty string. Any violation throws `BadGatewayException`.
+
+</Steps>
+
+## Persistence
+
+Once all constraints are satisfied, the micro-objectives are written to the database in a single batch insert (`createMany`) via the Prisma service. Each record is linked to both the original `task_id` and the current `session_id`, creating a full audit trail that survives task deletion.
+
+## Error handling and fallback
+
+<Warning>
+  `AI_SERVICE_API_KEY` is a required environment variable. If it is missing or empty, the Task Decomposer immediately throws `502 Bad Gateway` without attempting to call the AI service. Set this variable before deploying MindFlow to a production environment.
+</Warning>
+
+If the AI service is unavailable, returns a non-2xx HTTP status, or produces an invalid response, the Task Decomposer throws `BadGatewayException`. The Session Service catches this exception, sets `decompositionFailed = true` in the response, and returns the student's original task in the `task` field.
+
+<Tip>
+  The fallback path ensures that a student is never left without actionable work. If the AI service is down or returns garbage, MindFlow gracefully degrades to showing the original task. The UX continues uninterrupted — the student simply sees their task in its undecomposed form rather than an error screen.
+</Tip>
+
+The `SubmitFatigueResponse` object communicates the outcome transparently to the frontend:
+
+```typescript
+interface SubmitFatigueResponse {
+  fatigueRecordId: string;
+  sessionId: string;
+  score: number;
+  recordedAtUtc: Date;
+  message: string;
+  microObjectives: MicroObjective[]; // populated when score >= 4 and AI succeeded
+  task: Task | null;                 // populated when score <= 3 or AI failed
+  decompositionFailed: boolean;      // true when AI call threw an error
+}
+```
+
+## Required environment variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `AI_SERVICE_URL` | Base URL of the LLM API endpoint | Yes (defaults to `https://api.openai.com/v1`) |
+| `AI_SERVICE_API_KEY` | Bearer token for authenticating with the AI service | ✅ Yes — service returns 502 without this |

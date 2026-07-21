@@ -1,0 +1,164 @@
+---
+title: "Dashboard API: aggregated student data endpoint"
+sidebarTitle: "Dashboard"
+description: "GET /api/v1/dashboard returns the authenticated student's active tasks sorted by deadline, pending micro-objectives grouped by task, and the last 30 fatigue scores in chronological order."
+---
+
+The Dashboard endpoint is MindFlow's single-call aggregation surface. Rather than requiring the frontend to chain multiple requests for tasks, micro-objectives, and fatigue history, `GET /api/v1/dashboard` fetches all three datasets in a single parallel database query and returns them under a unified response envelope. This keeps the initial page load fast and makes polling straightforward.
+
+<Note>
+  All data returned is strictly scoped to the authenticated student. No task, micro-objective, or fatigue record from any other account will ever appear in the response — the queries are filtered by `studentId` extracted from the JWT at the service layer.
+</Note>
+
+---
+
+## GET /api/v1/dashboard
+
+Returns the authenticated student's aggregated dashboard data: active tasks (with their nested active micro-objectives) sorted by deadline, and the student's last 30 fatigue scores ordered chronologically.
+
+**Authentication:** JWT Bearer
+
+**Request Body:** None
+
+### Response — 200 OK
+
+<ResponseField name="data.tasks" type="array">
+  Active (non-deleted) tasks belonging to the authenticated student, sorted ascending by `deadline`. Each task object includes a nested `microObjectives` array containing only the task's active micro-objectives (`is_audit_only = false`), ordered by `createdAt` ascending.
+</ResponseField>
+
+<ResponseField name="data.microObjectives" type="array">
+  Flat array of all active micro-objectives across all tasks, produced by flattening the per-task `microObjectives` arrays. Useful for rendering a combined pending-work view.
+</ResponseField>
+
+<ResponseField name="data.fatigueHistory" type="array">
+  Up to 30 fatigue records for the student, ordered by `recordedAtUtc` descending as returned from the database. Contains one entry per fatigue score submission. If the student has never submitted a score, this array is empty.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `200`
+</ResponseField>
+
+```json Example Response
+{
+  "data": {
+    "tasks": [
+      {
+        "id": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+        "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "name": "Write thesis introduction",
+        "description": "Cover motivation and research questions",
+        "deadline": "2025-08-01T23:59:00.000Z",
+        "isDeleted": false,
+        "createdAt": "2025-07-10T14:00:00.000Z",
+        "updatedAt": "2025-07-10T14:00:00.000Z",
+        "microObjectives": [
+          {
+            "id": "9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f",
+            "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+            "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+            "content": "Draft the motivation section (250 words)",
+            "estimatedMinutes": 20,
+            "isCompleted": false,
+            "isAuditOnly": false,
+            "createdAt": "2025-07-15T09:00:00.000Z"
+          }
+        ]
+      },
+      {
+        "id": "4a8b2c1d-3e4f-5a6b-7c8d-9e0f1a2b3c4d",
+        "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "name": "Prepare statistics presentation",
+        "description": null,
+        "deadline": "2025-08-15T18:00:00.000Z",
+        "isDeleted": false,
+        "createdAt": "2025-07-12T09:00:00.000Z",
+        "updatedAt": "2025-07-12T09:00:00.000Z",
+        "microObjectives": []
+      }
+    ],
+    "microObjectives": [
+      {
+        "id": "9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f",
+        "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+        "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+        "content": "Draft the motivation section (250 words)",
+        "estimatedMinutes": 20,
+        "isCompleted": false,
+        "isAuditOnly": false,
+        "createdAt": "2025-07-15T09:00:00.000Z"
+      }
+    ],
+    "fatigueHistory": [
+      {
+        "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+        "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+        "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "fatigueScore": 4,
+        "recordedAtUtc": "2025-07-25T10:30:00.000Z"
+      },
+      {
+        "id": "d4e5f6a7-b8c9-0123-defa-234567890123",
+        "sessionId": "a9b8c7d6-e5f4-3210-abcd-ef9876543210",
+        "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "fatigueScore": 2,
+        "recordedAtUtc": "2025-07-24T09:02:00.000Z"
+      }
+    ]
+  },
+  "error": null,
+  "status": 200
+}
+```
+
+### Empty State
+
+If the student has no active sessions and has never submitted a fatigue score, `fatigueHistory` is returned as an empty array. Tasks and micro-objectives follow the same pattern — an empty array is returned, never `null`.
+
+```json Empty state example
+{
+  "data": {
+    "tasks": [],
+    "microObjectives": [],
+    "fatigueHistory": []
+  },
+  "error": null,
+  "status": 200
+}
+```
+
+### Ordering and Filtering Rules
+
+| Field | Rule |
+|-------|------|
+| `tasks` | Sorted ascending by `deadline` (nearest deadline first). Soft-deleted tasks (`isDeleted = true`) are excluded. |
+| `tasks[].microObjectives` | Sorted ascending by `createdAt`. Micro-objectives with `isAuditOnly = true` are excluded. |
+| `microObjectives` | Flat projection of all nested `microObjectives` arrays; inherits the same `isAuditOnly` filter. |
+| `fatigueHistory` | Up to 30 records, ordered descending by `recordedAtUtc` as stored; contains all scores regardless of the associated session's current `isActive` state. |
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | JWT is missing or expired. |
+
+<Tip>
+  Because this endpoint aggregates all the data a dashboard view needs in a single round-trip, it is well-suited for periodic polling. Consider using **SWR** or **React Query** on the frontend to refetch after micro-objective completions:
+
+  ```typescript
+  // React Query example — refetch every 30 seconds and on window focus
+  const { data } = useQuery({
+    queryKey: ['dashboard'],
+    queryFn: () => fetch('/api/v1/dashboard', {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(r => r.json()),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
+  ```
+
+  After a student marks a micro-objective as complete via `PATCH /api/v1/tasks/:taskId/micro-objectives/:moId`, calling `invalidateQueries(['dashboard'])` will trigger an immediate refetch and keep the UI in sync.
+</Tip>

@@ -1,0 +1,272 @@
+---
+title: "Sessions API: EMA session and fatigue score endpoints"
+sidebarTitle: "Sessions"
+description: "Start EMA sessions, submit fatigue scores (1–5), and retrieve session history. Scores outside the valid range are rejected at the DTO level before any database write."
+---
+
+The Sessions API drives MindFlow's core adaptive loop. A student starts an EMA (Ecological Momentary Assessment) session, which opens a window for submitting a self-reported fatigue score on the 1–5 scale. If the submitted score is 4 or higher, the backend automatically triggers the AI task decomposer to break the student's active tasks into bite-sized micro-objectives of no more than 25 minutes each. All three endpoints require JWT authentication, and every response follows the standard `{ data, error, status }` envelope.
+
+<Note>
+  Starting a new session with `POST /api/v1/sessions` automatically closes any previously active session for the same student by setting its `is_active = false` and recording an `endedAt` timestamp.
+</Note>
+
+---
+
+## POST /api/v1/sessions
+
+Starts a new EMA session for the authenticated student. The response contains the server-assigned `sessionId` (which is required for the subsequent fatigue submission) and the EMA bot's opening prompt.
+
+**Authentication:** JWT Bearer
+
+**Request Body:** None
+
+### Response — 201 Created
+
+<ResponseField name="data.sessionId" type="string">
+  UUID of the newly created session. Pass this value to `POST /api/v1/sessions/:sessionId/fatigue`.
+</ResponseField>
+
+<ResponseField name="data.prompt" type="string">
+  The EMA bot's opening question presented to the student.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `201`
+</ResponseField>
+
+```json Example Response
+{
+  "data": {
+    "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "prompt": "¿Cómo te sientes hoy? (1-5)"
+  },
+  "error": null,
+  "status": 201
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | JWT is missing or expired. |
+
+---
+
+## POST /api/v1/sessions/:sessionId/fatigue
+
+Submits the student's self-reported fatigue score for an active session. The score is validated strictly at the DTO level before any database write is attempted. On a valid submission the server persists a `FatigueRecord`, closes the session (`is_active = false`), and — if the score is `>= 4` — invokes the AI task decomposer for the student's active tasks.
+
+**Authentication:** JWT Bearer
+
+### Path Parameters
+
+<ParamField path="sessionId" type="string" required>
+  UUID of the active session returned by `POST /api/v1/sessions`.
+</ParamField>
+
+### Request Body
+
+<ParamField body="score" type="integer" required>
+  Self-reported fatigue score. Must be a **whole integer** in the range `[1, 5]`. Decimals, strings, booleans, and `null` are all rejected with `422`.
+</ParamField>
+
+<ParamField body="taskId" type="string">
+  Optional UUID of a specific task to decompose when `score >= 4`. If omitted and the score triggers decomposition, the service selects the task with the earliest deadline.
+</ParamField>
+
+```json Example Request
+{
+  "score": 4
+}
+```
+
+```json Example Request with taskId
+{
+  "score": 4,
+  "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f"
+}
+```
+
+### Response — 201 Created
+
+<ResponseField name="data.fatigueRecordId" type="string">
+  UUID of the persisted `FatigueRecord`.
+</ResponseField>
+
+<ResponseField name="data.sessionId" type="string">
+  UUID of the session this record belongs to.
+</ResponseField>
+
+<ResponseField name="data.score" type="integer">
+  The fatigue score as stored — always a whole integer in `[1, 5]`.
+</ResponseField>
+
+<ResponseField name="data.recordedAtUtc" type="string">
+  ISO 8601 UTC timestamp of when the record was persisted.
+</ResponseField>
+
+<ResponseField name="data.message" type="string">
+  Human-readable status message indicating the next step in the EMA flow.
+</ResponseField>
+
+<ResponseField name="data.microObjectives" type="array">
+  Array of AI-generated `MicroObjective` objects. Populated only when `score >= 4` and the AI decomposer succeeds; empty array otherwise.
+</ResponseField>
+
+<ResponseField name="data.task" type="object | null">
+  The original Task object. Returned when no micro-objectives were generated — either because `score <= 3` or as a fallback when AI decomposition fails. `null` when micro-objectives were successfully generated.
+</ResponseField>
+
+<ResponseField name="data.decompositionFailed" type="boolean">
+  `true` if decomposition was attempted (`score >= 4`) but the AI service failed. The original task is surfaced as a fallback in this case.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `201`
+</ResponseField>
+
+```json Example Response — score 4, AI decomposition successful
+{
+  "data": {
+    "fatigueRecordId": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+    "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "score": 4,
+    "recordedAtUtc": "2025-07-25T10:30:00.000Z",
+    "message": "Fatigue score registrado. Se generaron 3 micro-objetivo(s) para tus tareas activas.",
+    "microObjectives": [
+      {
+        "id": "9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f",
+        "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+        "content": "Draft the motivation section (250 words)",
+        "estimatedMinutes": 20,
+        "isCompleted": false
+      }
+    ],
+    "task": null,
+    "decompositionFailed": false
+  },
+  "error": null,
+  "status": 201
+}
+```
+
+```json Example Response — score 2, no decomposition
+{
+  "data": {
+    "fatigueRecordId": "d4e5f6a7-b8c9-0123-defa-234567890123",
+    "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "score": 2,
+    "recordedAtUtc": "2025-07-25T10:30:00.000Z",
+    "message": "Fatigue score registrado. Transicionando al flujo de interacción de tareas.",
+    "microObjectives": [],
+    "task": {
+      "id": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+      "name": "Write thesis introduction",
+      "deadline": "2025-08-01T23:59:00.000Z"
+    },
+    "decompositionFailed": false
+  },
+  "error": null,
+  "status": 201
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `422 Unprocessable Entity` | `score` is not a whole integer, is out of the `[1, 5]` range, is a decimal, a string, a boolean, or `null`. |
+| `400 Bad Request` | The session does not exist, belongs to a different student, or has already been completed. |
+| `401 Unauthorized` | JWT is missing or expired. |
+
+<Note>
+  Score validation is strict. Even `5.0` (a float that happens to equal an integer) is rejected with `422` because the DTO uses `@IsInt()` — only JavaScript values of type `number` with no fractional part pass validation. The `@Type(() => Number)` transformer coerces query-string numbers, but a JSON body value of `4.5` or `"4"` will never be accepted.
+</Note>
+
+<Warning>
+  Submitting a score to an already-completed session (i.e. a session where `is_active = false`) returns `400 Bad Request`. Always use the `sessionId` from the most recent `POST /api/v1/sessions` call.
+</Warning>
+
+---
+
+## GET /api/v1/sessions
+
+Returns the authenticated student's session history — up to the last 30 sessions, ordered by `startedAt` descending (most recent first).
+
+**Authentication:** JWT Bearer
+
+**Request Body:** None
+
+### Response — 200 OK
+
+<ResponseField name="data" type="array">
+  Array of up to 30 session objects sorted by `startedAt` descending.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `200`
+</ResponseField>
+
+Each item in the `data` array has the following fields:
+
+<ResponseField name="data[].id" type="string">
+  UUID of the session.
+</ResponseField>
+
+<ResponseField name="data[].studentId" type="string">
+  UUID of the owning student.
+</ResponseField>
+
+<ResponseField name="data[].startedAt" type="string">
+  ISO 8601 UTC timestamp when the session was created.
+</ResponseField>
+
+<ResponseField name="data[].endedAt" type="string | null">
+  ISO 8601 UTC timestamp when the session was closed, or `null` if the session is still active.
+</ResponseField>
+
+<ResponseField name="data[].isActive" type="boolean">
+  `true` if the session has not yet received a fatigue score submission.
+</ResponseField>
+
+```json Example Response
+{
+  "data": [
+    {
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "startedAt": "2025-07-25T10:28:00.000Z",
+      "endedAt": "2025-07-25T10:30:00.000Z",
+      "isActive": false
+    },
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "startedAt": "2025-07-24T09:00:00.000Z",
+      "endedAt": "2025-07-24T09:02:00.000Z",
+      "isActive": false
+    }
+  ],
+  "error": null,
+  "status": 200
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | JWT is missing or expired. |

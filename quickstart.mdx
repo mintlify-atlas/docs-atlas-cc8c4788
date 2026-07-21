@@ -1,47 +1,196 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with MindFlow in under 10 minutes"
+sidebarTitle: "Quickstart"
+description: "Clone MindFlow, configure environment variables, and run the full stack locally using Docker Compose or bare Node.js in five steps."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you through getting the complete MindFlow stack — PostgreSQL database, NestJS backend, and Next.js frontend — running on your local machine. By the end you will have a working instance where you can register a student account, start an EMA session, submit a fatigue score, and see the Task Decomposer in action. The whole process takes fewer than ten minutes on a machine that already meets the prerequisites.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure the following tools are installed and available on your `PATH`:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+| Tool | Minimum version | Check |
+|---|---|---|
+| Node.js | 20.x | `node --version` |
+| npm | 9.x | `npm --version` |
+| Docker | Any recent stable | `docker --version` |
+| Docker Compose | V2 (bundled with Docker Desktop) | `docker compose version` |
 
-## Get started
+<Warning>
+  MindFlow's backend requires **Node.js ≥ 20**. Earlier versions are not supported because the codebase uses native features available only in the Node.js 20 LTS line.
+</Warning>
 
-<Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+---
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+## Choose your path
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+<Tabs>
+  <Tab title="Docker Compose">
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+  Running with Docker Compose is the recommended path. A single command brings up PostgreSQL 18, the NestJS backend, and the Next.js frontend inside an isolated Docker network — no local database installation required.
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+  <Tip>
+    Before building, run `docker compose config` to validate your Compose file and verify that all required environment variable substitutions resolve correctly. This catches missing `.env` values before the build starts.
+  </Tip>
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+  <Steps>
+    <Step title="Clone the repository">
+      ```bash
+      git clone https://github.com/J0S3-LEON/pf_pruebasAseguramientoCalid_SDD.git
+      cd pf_pruebasAseguramientoCalid_SDD
+      ```
+    </Step>
+
+    <Step title="Configure environment variables">
+      Copy the example file and fill in the required values:
+
+      ```bash
+      cp .env.example .env
+      ```
+
+      Open `.env` in your editor. The variables are split by layer:
+
+      **Backend variables**
+
+      | Variable | Description |
+      |---|---|
+      | `DATABASE_URL` | Full PostgreSQL connection string, e.g. `postgresql://user:pass@db:5432/mindflow` |
+      | `JWT_SECRET` | Random string of **at least 32 characters** used to sign JWT tokens |
+      | `FRONTEND_URL` | Origin(s) allowed by CORS — use `http://localhost:3000` locally; comma-separated for multiple |
+      | `PORT` | Port the backend listens on inside the container — defaults to `3001` |
+      | `AI_SERVICE_API_KEY` | API key for the external LLM service used by the Task Decomposer |
+
+      **Frontend variables**
+
+      | Variable | Description |
+      |---|---|
+      | `NEXT_PUBLIC_API_URL` | Public URL of the backend including the `/api/v1` prefix, e.g. `http://backend:3001/api/v1` |
+      | `NEXT_PUBLIC_APP_URL` | Public URL of the frontend, e.g. `http://localhost:3000` |
+      | `AUTH_SECRET` | Independent random secret (≥ 32 chars) used by Auth.js — must differ from `JWT_SECRET` |
+      | `AUTH_DEBUG` | Set to `false`; only enable `true` during local Auth.js troubleshooting |
+
+      <Warning>
+        Never commit the `.env` file to version control. It is already listed in `.gitignore`. The `NEXT_PUBLIC_*` variables are baked into the frontend bundle at build time — configure them before running `docker compose build`.
+      </Warning>
+    </Step>
+
+    <Step title="Build and start all services">
+      ```bash
+      docker compose build
+      docker compose up -d
+      ```
+
+      Docker Compose will start three services on the internal `mindflow` network:
+
+      - **`db`** — PostgreSQL 18 Alpine on port 5432 (internal only)
+      - **`backend`** — NestJS API on port 3001 (internal only)
+      - **`frontend`** — Next.js on port 3000 (the only service exposed externally)
+
+      You can follow logs with:
+
+      ```bash
+      docker compose logs -f backend frontend
+      ```
+    </Step>
+
+    <Step title="Run database migrations">
+      Wait for the `backend` service to report healthy, then apply the Prisma migrations:
+
+      ```bash
+      docker compose exec backend npm run prisma:migrate:deploy --workspace @mindflow/backend
+      ```
+
+      This runs all pending versioned migrations against the PostgreSQL container. The command is idempotent — running it again on an up-to-date database is safe.
+
+      <Note>
+        The backend container includes a startup retry loop that attempts to connect to PostgreSQL up to **5 times** with a 5-second interval. If migrations fail because the database is still initialising, wait a few seconds and re-run the command.
+      </Note>
+    </Step>
+
+    <Step title="Open MindFlow in your browser">
+      Navigate to **http://localhost:3000**.
+
+      1. Click **Register** and create a student account with a valid email and a password of at least 8 characters.
+      2. Log in — you will receive a signed JWT valid for 24 hours.
+      3. From the Dashboard, create an academic task with a name and deadline.
+      4. Click **Start EMA Session** to open the EMA chatbot.
+      5. Enter a fatigue score between 1 and 5. If you enter **4 or 5**, watch the Task Decomposer split your task into 2–7 micro-objectives of ≤ 25 minutes each.
+    </Step>
+  </Steps>
+
+  </Tab>
+  <Tab title="Bare Node.js">
+
+  Use this path if you prefer to run the backend and frontend processes directly on your machine without Docker. You will need a PostgreSQL instance already running and accessible.
+
+  <Note>
+    Bare Node.js mode requires a running PostgreSQL instance. Create a database and update the `DATABASE_URL` variable in your `.env` file to point to it before starting the backend. A typical local connection string looks like `postgresql://postgres:password@localhost:5432/mindflow`.
+  </Note>
+
+  <Steps>
+    <Step title="Install all workspace dependencies">
+      From the repository root, install dependencies for all workspaces in a single command:
+
+      ```bash
+      npm ci
+      ```
+
+      This installs exact versions from `package-lock.json` for `mindflow` (root), `@mindflow/frontend`, `@mindflow/backend`, and `@mindflow/shared`.
+    </Step>
+
+    <Step title="Build the shared types package">
+      The backend and frontend both depend on `@mindflow/shared`. Build it first so TypeScript can resolve shared interfaces:
+
+      ```bash
+      npm run build --workspace @mindflow/shared
+      ```
+    </Step>
+
+    <Step title="Generate the Prisma client">
+      Generate the type-safe Prisma client from the schema before starting the backend:
+
+      ```bash
+      npm run prisma:generate --workspace @mindflow/backend
+      ```
+
+      <Note>
+        If this is the first time running against your local PostgreSQL database, also run the migrations:
+        ```bash
+        npm run prisma:migrate:deploy --workspace @mindflow/backend
+        ```
+      </Note>
+    </Step>
+
+    <Step title="Start the backend (Terminal 1)">
+      Open a terminal and start the NestJS development server:
+
+      ```bash
+      npm run dev --workspace @mindflow/backend
+      ```
+
+      The API will be available at `http://localhost:3001/api/v1`. You should see the NestJS bootstrap log confirming the global prefix, CORS, Helmet, and ValidationPipe are active.
+    </Step>
+
+    <Step title="Start the frontend (Terminal 2)">
+      Open a second terminal and start the Next.js development server:
+
+      ```bash
+      npm run dev --workspace @mindflow/frontend
+      ```
+
+      Navigate to **http://localhost:3000** to access MindFlow. The frontend proxies API requests to the backend at the URL configured in `NEXT_PUBLIC_API_URL`.
+    </Step>
+  </Steps>
+
+  </Tab>
+</Tabs>
+
+---
+
+## What's next?
+
+Now that MindFlow is running locally, you can explore the rest of the documentation:
+
+- **[Architecture](/architecture)** — understand the three-tier system design, NestJS modules, and Prisma data models.
+- **[Introduction](/introduction)** — dive deeper into EMA, the Task Decomposer threshold logic, and the full glossary of system components.

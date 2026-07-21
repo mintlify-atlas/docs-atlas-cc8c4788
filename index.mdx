@@ -1,20 +1,62 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "MindFlow: AI-powered academic procrastination platform"
+sidebarTitle: "Home"
+description: "MindFlow helps students overcome procrastination by assessing cognitive fatigue in real time and decomposing complex tasks into bite-sized micro-objectives."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+MindFlow is a full-stack web platform built with Next.js, NestJS, and PostgreSQL. It uses an EMA (Ecological Momentary Assessment) chatbot to measure a student's mental fatigue on a 1–5 scale, then automatically breaks down difficult tasks into micro-objectives of 25 minutes or less — reducing cognitive friction and making it easy to take the next step.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Understand the problem MindFlow solves and how the system fits together.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, set environment variables, and run MindFlow locally in minutes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Explore the three-tier monorepo: Next.js frontend, NestJS API, and PostgreSQL.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Full reference for every REST endpoint under `/api/v1/`.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## How MindFlow Works
+
+<Steps>
+  <Step title="Student logs in">
+    Register with an email and password. MindFlow issues a signed JWT that grants access to all protected endpoints for 24 hours.
+  </Step>
+  <Step title="Start an EMA session">
+    The EMA chatbot asks for a fatigue score from 1 to 5. This score is persisted with a UTC timestamp and linked to the active session.
+  </Step>
+  <Step title="Tasks get intelligently adapted">
+    If fatigue ≥ 4, the Task Decomposer calls an external LLM to split every active task into 2–7 micro-objectives, each capped at 25 minutes. If fatigue ≤ 3, tasks are shown in their original form.
+  </Step>
+  <Step title="Track progress on the Dashboard">
+    The Dashboard displays active tasks sorted by deadline, pending micro-objectives grouped by parent task, and a time-series chart of the last 30 fatigue scores.
+  </Step>
+</Steps>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="EMA Chatbot" icon="comments" href="/features/ema-session">
+    Real-time fatigue assessment via a conversational interface. Scores outside [1, 5] are rejected without being recorded.
+  </Card>
+  <Card title="Task Decomposer" icon="list-check" href="/features/task-decomposer">
+    AI-powered breakdown of complex tasks into actionable micro-objectives when fatigue is high.
+  </Card>
+  <Card title="Student Dashboard" icon="gauge" href="/features/dashboard">
+    Consolidated view of tasks, micro-objectives, and a 30-session fatigue history chart.
+  </Card>
+  <Card title="Notifications" icon="bell" href="/features/notifications">
+    Contextual reminders with frequency limits (≤3/day) and suppression during active EMA sessions.
+  </Card>
+  <Card title="Authentication" icon="shield-halved" href="/features/authentication">
+    JWT-based auth with bcrypt hashing, 24-hour token expiry, and global guard with public route exceptions.
+  </Card>
+  <Card title="Property-Based Testing" icon="flask" href="/testing/property-based-testing">
+    27 correctness properties verified with fast-check across hundreds of random inputs per run.
+  </Card>
+</CardGroup>

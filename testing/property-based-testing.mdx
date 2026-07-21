@@ -1,0 +1,278 @@
+---
+title: "Property-based testing with fast-check in MindFlow"
+sidebarTitle: "Property-Based Testing"
+description: "MindFlow defines 27 correctness properties verified with fast-check. Each property runs 100+ iterations with randomly generated inputs to find edge cases conventional tests miss."
+---
+
+Property-based testing (PBT) turns a correctness claim — "for all valid sessions, serializing and then deserializing must reproduce the original object" — into an executable test that the library fast-check verifies against hundreds of randomly generated inputs. Instead of enumerating every edge case by hand, you declare what must always be true and let the library find the combinations that break it. When a counterexample is found, fast-check automatically shrinks it to the smallest failing input, making debugging fast. MindFlow uses PBT to verify 27 invariants that span authentication, task isolation, fatigue score range enforcement, notification frequency limits, SQL injection safety, and serialization round-trips.
+
+## What is fast-check?
+
+[fast-check](https://fast-check.dev) is a TypeScript property-based testing library that integrates natively with Jest. It ships with a comprehensive set of built-in arbitraries (`fc.uuid()`, `fc.date()`, `fc.boolean()`, `fc.integer()`, `fc.record()`, etc.) and supports asynchronous properties with `fc.asyncProperty`.
+
+Install it as a dev dependency:
+
+```bash
+npm install --save-dev fast-check
+```
+
+## PBT configuration
+
+Every property in MindFlow runs with a minimum of **100 iterations**. Pass `{ numRuns: 100 }` as the second argument to `fc.assert`:
+
+```typescript
+fc.assert(
+  fc.property(/* arbitraries */, (generatedInput) => {
+    // assertion that must hold for every generated input
+  }),
+  { numRuns: 100 }
+);
+```
+
+<Note>
+Auth and notification specs use `numRuns: 5` because each iteration bootstraps a full NestJS `TestingModule` with bcrypt hashing — even 5 iterations cover a large input space and keep CI time under the 60-second `testTimeout` set in `apps/backend/jest.config.js`.
+</Note>
+
+## Example: Session serialization round-trip (Property 24)
+
+The following example is drawn directly from the design specification. It uses `fc.record` to generate random `Session` objects and asserts that `deserialize(serialize(session))` is deeply equal to the original.
+
+```typescript
+import * as fc from 'fast-check';
+
+it('Property 24: Round-Trip de Serialización de Session', () => {
+  fc.assert(
+    fc.property(
+      fc.record({
+        id: fc.uuid(),
+        studentId: fc.uuid(),
+        startedAt: fc.date(),
+        isActive: fc.boolean(),
+      }),
+      (session) => {
+        const serialized = sessionSerializer.serialize(session);
+        const deserialized = sessionSerializer.deserialize(serialized);
+        expect(deserialized).toEqual(session);
+      }
+    ),
+    { numRuns: 100 }
+  );
+});
+```
+
+## Example: Auth round-trip with in-memory Prisma mock (Property 1)
+
+This pattern, taken from `apps/backend/src/auth/__tests__/auth.property.spec.ts`, shows how MindFlow builds an isolated `AuthService` per iteration using `@nestjs/testing` and a stateful in-memory store that mirrors the real Prisma unique-constraint behavior:
+
+```typescript
+import * as fc from 'fast-check';
+import { Test } from '@nestjs/testing';
+import { JwtModule } from '@nestjs/jwt';
+import { ConfigModule } from '@nestjs/config';
+import { AuthService } from '../auth.service';
+import { PrismaService } from '../../prisma/prisma.service';
+
+const validEmailArb = fc.tuple(
+  fc.stringOf(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'.split('')), {
+    minLength: 3, maxLength: 10,
+  }),
+  fc.stringOf(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz'.split('')), {
+    minLength: 3, maxLength: 8,
+  }),
+  fc.constantFrom('com', 'edu', 'org', 'net'),
+).map(([local, domain, tld]) => `${local}@${domain}.${tld}`);
+
+const validPasswordArb = fc.stringOf(
+  fc.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'.split('')),
+  { minLength: 8, maxLength: 30 },
+);
+
+it('P1 — FOR ALL valid (email, password≥8): register → login → validateToken preserves identity', async () => {
+  await fc.assert(
+    fc.asyncProperty(validEmailArb, validPasswordArb, async (email, password) => {
+      // Each iteration gets a fresh in-memory store — full isolation
+      const { authService } = await buildAuthService(inMemoryPrisma);
+
+      await authService.register(email, password);
+      const { token } = await authService.login(email, password);
+      const payload = await authService.validateToken(token);
+
+      expect(payload.email).toBe(email);
+      expect(typeof payload.studentId).toBe('string');
+      expect(payload.exp - payload.iat).toBe(86400); // exactly 24 hours
+    }),
+    { numRuns: 5 },
+  );
+});
+```
+
+## Example: Route versioning (Property 23)
+
+From `apps/backend/src/__tests__/route-versioning.property.spec.ts`, this property introspects the live Express router stack after `app.init()` and asserts the invariant over every registered route:
+
+```typescript
+import * as fc from 'fast-check';
+
+it('P23 — property: FOR ALL registered routes, path starts with /api/v1/', () => {
+  expect(registeredRoutes.length).toBeGreaterThan(0);
+
+  fc.assert(
+    fc.property(
+      fc.constantFrom(...registeredRoutes),
+      (route) => {
+        // The invariant: every registered route path MUST start with /api/v1/
+        return route.path.startsWith('/api/v1/');
+      },
+    ),
+    {
+      numRuns: registeredRoutes.length,
+      verbose: true,
+    },
+  );
+});
+```
+
+## All 27 correctness properties
+
+<AccordionGroup>
+  <Accordion title="Auth properties (1–5)">
+    **Property 1 — Round-Trip Registration + Login**
+    For all `(email, password ≥ 8 chars)`, the flow `register → login → validateToken` returns a JWT that, when decoded, identifies the same student without loss of identity data (`email`, `studentId`, `iat`, `exp`).
+    _Validates: Requirements 1.1, 1.3_
+
+    **Property 2 — Account Uniqueness**
+    For all sequences of N ≥ 2 registration attempts with the same email, `AuthService` creates exactly one account and rejects all subsequent attempts with HTTP 409 (`ConflictException`), regardless of N or call order.
+    _Validates: Requirement 1.2_
+
+    **Property 3 — JWT 24-Hour Expiry**
+    For all valid credential pairs, the JWT returned by `AuthService` has `exp == iat + 86400` seconds (exactly 24 hours).
+    _Validates: Requirement 1.3_
+
+    **Property 4 — Invalid Credential Rejection**
+    For all `(email, password)` where at least one field does not correspond to a valid account, `AuthService` returns HTTP 401. The error message must **not** differentiate which field is incorrect.
+    _Validates: Requirement 1.4_
+
+    **Property 5 — Valid vs. Expired JWT Access**
+    For all JWTs where `exp > now`, `API_Gateway` grants access. For all JWTs where `exp ≤ now`, `API_Gateway` returns HTTP 401 (`UnauthorizedException`).
+    _Validates: Requirements 1.5, 1.6_
+  </Accordion>
+
+  <Accordion title="Task properties (6–8)">
+    **Property 6 — Task Isolation by Student**
+    For all pairs of distinct students S1 and S2, the sets of tasks returned by `API_Gateway` for each student are disjoint — no task from S1 appears in S2's list regardless of the total number of tasks in the system.
+    _Validates: Requirements 2.3, 2.5_
+
+    **Property 7 — Deadline Ordering Invariant**
+    For all task lists returned by `API_Gateway`, the sequence of `deadline` values is non-decreasing (stable ascending order), regardless of insertion order.
+    _Validates: Requirement 2.3_
+
+    **Property 8 — Soft-Delete Idempotence**
+    For all tasks already marked `is_deleted = true`, applying the deletion operation again produces the same state (`is_deleted = true`) without errors or mutations to other fields or associated micro-objectives.
+    _Validates: Requirement 2.6_
+  </Accordion>
+
+  <Accordion title="EMA / Session properties (9–11)">
+    **Property 9 — Fatigue Score Range [1, 5]**
+    For all `Fatigue_Score` values persisted in the `fatigue_scores` table, the stored `score` is an integer in `[1, 5]`. Any attempt to persist a value outside this range or of a non-integer type is rejected by the validation layer before reaching the database.
+    _Validates: Requirement 3.2_
+
+    **Property 10 — Referential Integrity of Fatigue_Score Metadata**
+    For all persisted `Fatigue_Score` records with any `(student_id, session_id, score)` combination, a valid `Student` and a valid `Session` with those identifiers must exist in the database. The record must also contain a `recorded_at` UTC timestamp.
+    _Validates: Requirements 3.5, 7.4_
+
+    **Property 11 — Exhaustive Rejection of Invalid Scores**
+    For all values sent by a student that are a number outside `[1, 5]`, a decimal, a string, `null`, `undefined`, a boolean, or an object, `EMA_Bot` rejects the input without recording any value and re-prompts the student.
+    _Validates: Requirement 3.2_
+  </Accordion>
+
+  <Accordion title="Task Decomposer properties (12–13)">
+    **Property 12 — Decomposition Threshold (fatigue ≥ 4)**
+    For all `(Task, Fatigue_Score)` pairs: if `fatigueScore >= 4`, `Task_Decomposer` produces micro-objectives; if `fatigueScore <= 3`, it produces exactly 0 micro-objectives. This behavioral separation holds for any task, regardless of its length or complexity.
+    _Validates: Requirements 4.1, 4.2_
+
+    **Property 13 — Cardinality and Duration Invariants**
+    For all tasks decomposed under `fatigueScore >= 4`, the number of generated micro-objectives is an integer in `[2, 7]`, and the `estimated_minutes` of each individual micro-objective is a positive integer ≤ 25.
+    _Validates: Requirement 4.3_
+  </Accordion>
+
+  <Accordion title="Dashboard properties (14–15)">
+    **Property 14 — Dashboard Data Isolation**
+    For all pairs of distinct students S1 and S2, the data displayed in S1's dashboard (tasks, micro-objectives, fatigue history) is completely disjoint from S2's — no information leaks between accounts.
+    _Validates: Requirements 5.1, 5.5_
+
+    **Property 15 — Cumulative Update Consistency**
+    For all sequences of N micro-objective completion marks, the dashboard reflects exactly N accumulated changes in `is_completed` state — no duplicates, no losses — regardless of processing order.
+    _Validates: Requirement 5.2_
+  </Accordion>
+
+  <Accordion title="Notification properties (16–18)">
+    **Property 16 — Notification Frequency Limit (≤ 3 / 24 h)**
+    For all students in any 24-hour window, the total number of notifications dispatched by `Notification_Service` with status `sent` is always ≤ 3, regardless of how many tasks have upcoming deadlines.
+    _Validates: Requirement 6.5_
+
+    **Property 17 — Session Suppression**
+    For all students with an active session (`is_active = true`), `Notification_Service` dispatches exactly 0 deadline reminder notifications for the full duration of the active session.
+    _Validates: Requirement 6.4_
+
+    **Property 18 — Exhaustive Notification Logging**
+    For all notifications processed by `Notification_Service` (dispatched successfully, failed, or suppressed), exactly one record must exist in `notification_logs` with a UTC `dispatched_at` timestamp and a valid `delivery_status`. Verified in `notification/__tests__/notification.property.spec.ts` with `fc.uuid()` arbitraries for `studentId` and `taskId` and `fc.boolean()` for session/delivery state combinations.
+    _Validates: Requirement 6.2_
+  </Accordion>
+
+  <Accordion title="DB Writer properties (19–20)">
+    **Property 19 — SQL Injection Safety**
+    For all arbitrary text inputs provided as field values in any `DB_Writer` operation — including payloads containing SQL metacharacters such as `'`, `--`, `;`, `DROP TABLE`, `UNION SELECT` — the `DB_Writer` persists the value literally as text without interpreting any metacharacter as an SQL command. This is guaranteed by Prisma's parameterized queries.
+    _Validates: Requirement 7.2_
+
+    **Property 20 — Write Retry Idempotence**
+    For all write operations that fail on the first attempt and succeed on the retry, the total number of records created in the database is exactly 1 — no duplicates — regardless of entity type (Session, Task, Fatigue_Score, Micro_Objective). Verified in `db-writer.service.spec.ts` with Jest fake timers advancing 500 ms.
+    _Validates: Requirement 7.3_
+  </Accordion>
+
+  <Accordion title="Infrastructure properties (21)">
+    **Property 21 — PostgreSQL Data Persistence Across Container Restarts**
+    For all N ≥ 1 consecutive restarts of the PostgreSQL container, data persisted in the `mindflow_pgdata` named volume before the restart is completely accessible and correct after the restart — no records lost or corrupted.
+    _Validates: Requirement 8.3_
+  </Accordion>
+
+  <Accordion title="API Gateway properties (22–23)">
+    **Property 22 — Response Envelope Structure**
+    For all responses returned by `API_Gateway`, regardless of the endpoint, HTTP method, or HTTP status code (200, 201, 400, 401, 403, 404, 409, 422, 502), the response body is valid JSON containing the fields `data`, `error`, and `status`. Verified in `__tests__/api-gateway.property.spec.ts` using supertest against a minimal NestJS app with `GlobalExceptionFilter` and `ResponseInterceptor`.
+    _Validates: Requirements 9.4, 9.5_
+
+    **Property 23 — Route Versioning under `/api/v1/`**
+    For all endpoints registered in `API_Gateway`, the full route path starts with the literal prefix `/api/v1/`, without exception. Routes accessed without this prefix return 404. Verified by introspecting the Express router stack after `app.init()` in `__tests__/route-versioning.property.spec.ts`.
+    _Validates: Requirement 9.3_
+  </Accordion>
+
+  <Accordion title="Serialization properties (24–27)">
+    **Property 24 — Session Serialization Round-Trip**
+    For all randomly generated `Session` objects with valid field values, `deserialize(serialize(session))` produces an object deeply equal to the original, with all fields preserving their value and type — no implicit coercion.
+    _Validates: Requirements 10.1, 10.5_
+
+    **Property 25 — Serialization Idempotence**
+    For all valid `Session` objects, `serialize(deserialize(serialize(session)))` produces a JSON string character-for-character identical to `serialize(session)` — serialization is stable under repeated applications.
+    _Validates: Requirement 10.3_
+
+    **Property 26 — Integer Type Preservation of Fatigue_Score**
+    For all `Fatigue_Score` values in `[1, 5]`, `Session_Serializer` produces a JSON `number` integer (no decimal point, no quotes) — never a string `"4"` or a float `4.0` — in any serialized `Session` object.
+    _Validates: Requirement 10.2_
+
+    **Property 27 — Invalid Payload Rejection**
+    For all JSON inputs with missing required fields, incorrect types, or out-of-range values, `Session_Serializer` returns a descriptive validation error without constructing any partial `Session` object or propagating inconsistent state.
+    _Validates: Requirement 10.4_
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+In CI, pin the fast-check seed to make failures reproducible. Pass `seed` in the options object:
+
+```typescript
+fc.assert(
+  fc.property(myArbitrary, (input) => { /* ... */ }),
+  { numRuns: 100, seed: 42 }
+);
+```
+
+When fast-check finds a failing case it prints the seed in the error output. Re-running with that seed deterministically reproduces the same counterexample on any machine.
+</Tip>

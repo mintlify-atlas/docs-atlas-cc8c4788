@@ -1,0 +1,162 @@
+---
+title: "Student dashboard: tasks, objectives, and fatigue history"
+sidebarTitle: "Dashboard"
+description: "The MindFlow dashboard aggregates active tasks sorted by deadline, pending micro-objectives grouped by task, and a 30-session fatigue score time-series chart."
+---
+
+The MindFlow dashboard is the student's command centre — a single API call returns everything needed to render the full study overview. Active tasks sorted by deadline, pending micro-objectives grouped under their parent tasks, and a chronological fatigue history are all returned together, eliminating the need for multiple round-trips on page load. The frontend uses Next.js App Router with SWR for data fetching and Recharts to render the fatigue time-series chart. When a student marks a micro-objective complete, the dashboard reflects the change within 2 seconds without requiring a full page reload.
+
+## Dashboard endpoint
+
+```
+GET /api/v1/dashboard
+```
+
+This endpoint requires a valid Bearer token. The `studentId` is read from the JWT payload, and the response contains only data belonging to that student — no cross-account data is ever returned.
+
+**Response structure**
+
+```json
+{
+  "data": {
+    "tasks": [...],
+    "microObjectives": [...],
+    "fatigueHistory": [...]
+  },
+  "error": null,
+  "status": 200
+}
+```
+
+## What the dashboard contains
+
+<CardGroup cols={2}>
+  <Card title="Active tasks" icon="clipboard-list">
+    All tasks where `is_deleted = false`, sorted by `deadline` ascending. Each task includes its micro-objectives in the response.
+  </Card>
+  <Card title="Pending micro-objectives" icon="circle-check">
+    All micro-objectives where `is_completed = false` and `is_audit_only = false`, grouped by their parent task.
+  </Card>
+  <Card title="Fatigue history" icon="chart-line">
+    The last 30 fatigue records for the student, ordered chronologically by `recordedAtUtc` ascending — ready to be fed into a Recharts time-series chart.
+  </Card>
+  <Card title="Empty state" icon="inbox">
+    If the student has no sessions yet, the `fatigueHistory` array is empty and the frontend displays an invitation to start their first EMA session.
+  </Card>
+</CardGroup>
+
+## Fetching dashboard data
+
+```typescript
+// Fetch the full dashboard payload
+const response = await fetch("https://api.mindflow.app/api/v1/dashboard", {
+  method: "GET",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+});
+
+const { data } = await response.json();
+
+// Active tasks sorted by deadline ASC
+const tasks = data.tasks;
+
+// Pending micro-objectives (flat array, each carries taskId for grouping)
+const microObjectives = data.microObjectives;
+
+// Last 30 fatigue scores ordered chronologically ASC
+const fatigueHistory = data.fatigueHistory;
+```
+
+## Active tasks
+
+The `tasks` array contains every task where `is_deleted = false`, ordered by `deadline` in ascending order. Each task object embeds its micro-objectives (those with `isAuditOnly = false`) sorted by `createdAt` ascending.
+
+```typescript
+interface Task {
+  id: string;
+  studentId: string;
+  name: string;
+  description: string | null;
+  deadline: string; // ISO 8601 UTC
+  isDeleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+  microObjectives: MicroObjective[];
+}
+```
+
+## Pending micro-objectives
+
+The `microObjectives` array is the flat union of all micro-objectives embedded in the tasks above, filtered to those with `isCompleted = false` and `isAuditOnly = false`. Use `taskId` to group them under their parent task in the UI.
+
+## Fatigue history chart
+
+The `fatigueHistory` array contains the last 30 `FatigueRecord` entries for the student, ordered by `recordedAtUtc` ascending (oldest first). This ordering is intentional — it matches the chronological left-to-right axis expected by Recharts' `LineChart` or `AreaChart` components.
+
+```typescript
+interface FatigueRecord {
+  id: string;
+  sessionId: string;
+  studentId: string;
+  fatigueScore: number; // integer 1–5
+  recordedAtUtc: string; // ISO 8601 UTC
+}
+```
+
+**Example Recharts integration**
+
+```typescript
+import { LineChart, Line, XAxis, YAxis, Tooltip } from "recharts";
+
+function FatigueChart({ history }: { history: FatigueRecord[] }) {
+  const chartData = history.map((record) => ({
+    date: new Date(record.recordedAtUtc).toLocaleDateString(),
+    score: record.fatigueScore,
+  }));
+
+  return (
+    <LineChart width={600} height={300} data={chartData}>
+      <XAxis dataKey="date" />
+      <YAxis domain={[1, 5]} />
+      <Tooltip />
+      <Line type="monotone" dataKey="score" stroke="#6366f1" strokeWidth={2} />
+    </LineChart>
+  );
+}
+```
+
+## Marking a micro-objective complete
+
+Although micro-objectives are surfaced in the dashboard response, they are updated through the task sub-resource endpoint:
+
+```
+PATCH /api/v1/tasks/:taskId/micro-objectives/:moId
+```
+
+```typescript
+// Mark a micro-objective as completed
+await fetch(
+  `https://api.mindflow.app/api/v1/tasks/${taskId}/micro-objectives/${moId}`,
+  {
+    method: "PATCH",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ isCompleted: true }),
+  }
+);
+// Re-validate the dashboard with SWR — the update is reflected within 2 seconds
+```
+
+The SWR-powered frontend revalidates the dashboard cache after this call, and the updated state is reflected in the UI within 2 seconds without a full page reload.
+
+## Empty state
+
+When a student has no completed EMA sessions, `fatigueHistory` is an empty array (`[]`). The frontend interprets this as the empty state and renders an invitation card prompting the student to start their first EMA session via `POST /api/v1/sessions`.
+
+## Data isolation
+
+The dashboard query always scopes every sub-query to the authenticated `studentId`. There is no way to retrieve another student's tasks, micro-objectives, or fatigue records through this endpoint. Cross-account data leakage is prevented at the service layer — not just at the API boundary.

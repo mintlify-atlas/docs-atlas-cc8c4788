@@ -1,0 +1,396 @@
+---
+title: "Tasks API: CRUD and micro-objectives endpoints"
+sidebarTitle: "Tasks"
+description: "REST endpoints for creating, listing, updating, and soft-deleting academic tasks and their AI-generated micro-objectives. All endpoints require JWT authentication."
+---
+
+The Tasks API is the backbone of MindFlow's academic workload management. It lets authenticated students create tasks with deadlines, update or soft-delete them, and interact with the AI-generated micro-objectives that are produced automatically when high fatigue is detected. Every write operation is ownership-checked against the JWT — a student can only read and modify their own tasks.
+
+<Note>
+  All endpoints in this group require a valid JWT Bearer token in the `Authorization` header. Requests without a valid token receive `401 Unauthorized`. Expired tokens are also rejected with `401`.
+</Note>
+
+---
+
+## GET /api/v1/tasks
+
+Returns all active (non-deleted) tasks belonging to the authenticated student, sorted ascending by deadline. The response includes each task's nested micro-objectives (where `is_audit_only = false`), so a single call is sufficient to populate a full task list view.
+
+**Authentication:** JWT Bearer
+
+### Response
+
+<ResponseField name="data" type="array">
+  Array of Task objects sorted by `deadline` ascending. Each task includes its active micro-objectives nested under `microObjectives`.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `200`
+</ResponseField>
+
+```json Example Response
+{
+  "data": [
+    {
+      "id": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+      "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "Write thesis introduction",
+      "description": "Cover motivation and research questions",
+      "deadline": "2025-08-01T23:59:00.000Z",
+      "isDeleted": false,
+      "createdAt": "2025-07-10T14:00:00.000Z",
+      "updatedAt": "2025-07-10T14:00:00.000Z",
+      "microObjectives": [
+        {
+          "id": "9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f",
+          "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+          "content": "Draft the motivation section (250 words)",
+          "estimatedMinutes": 20,
+          "isCompleted": false,
+          "isAuditOnly": false,
+          "createdAt": "2025-07-15T09:00:00.000Z"
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "status": 200
+}
+```
+
+<Note>
+  Only the authenticated student's own tasks are returned. Tasks belonging to other students are never included — the query is scoped to the JWT's `studentId` at the database level.
+</Note>
+
+---
+
+## POST /api/v1/tasks
+
+Creates a new academic task for the authenticated student. On success the server returns the persisted task record with its assigned UUID.
+
+**Authentication:** JWT Bearer
+
+### Request Body
+
+<ParamField body="name" type="string" required>
+  The task name. Cannot be empty. Maximum 255 characters.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Optional free-text description of the task.
+</ParamField>
+
+<ParamField body="deadline" type="string" required>
+  Task deadline as an ISO 8601 UTC datetime string, e.g. `2025-08-01T23:59:00Z`. The server converts this to a UTC `Date` internally.
+</ParamField>
+
+```json Example Request
+{
+  "name": "Write thesis introduction",
+  "description": "Cover motivation, research questions, and scope",
+  "deadline": "2025-08-01T23:59:00Z"
+}
+```
+
+### Response — 201 Created
+
+<ResponseField name="data" type="object">
+  The newly created Task object, including its server-generated UUID and timestamps.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `201`
+</ResponseField>
+
+```json Example Response
+{
+  "data": {
+    "id": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+    "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Write thesis introduction",
+    "description": "Cover motivation, research questions, and scope",
+    "deadline": "2025-08-01T23:59:00.000Z",
+    "isDeleted": false,
+    "createdAt": "2025-07-25T10:00:00.000Z",
+    "updatedAt": "2025-07-25T10:00:00.000Z",
+    "microObjectives": []
+  },
+  "error": null,
+  "status": 201
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `422 Unprocessable Entity` | `name` is missing or empty, or `deadline` is not a valid ISO 8601 date string. |
+| `401 Unauthorized` | JWT is missing or expired. |
+
+```json 422 Example
+{
+  "data": null,
+  "error": "El nombre de la tarea no puede estar vacío.; El deadline debe ser una fecha ISO 8601 válida.",
+  "status": 422
+}
+```
+
+---
+
+## PATCH /api/v1/tasks/:taskId
+
+Updates one or more fields of an existing task. All fields are optional — only the fields included in the request body are updated (partial update). The server verifies that the task belongs to the authenticated student before applying any changes.
+
+**Authentication:** JWT Bearer
+
+### Path Parameters
+
+<ParamField path="taskId" type="string" required>
+  UUID of the task to update.
+</ParamField>
+
+### Request Body
+
+All fields are optional. At least one should be provided for the request to have any effect.
+
+<ParamField body="name" type="string">
+  New task name. Cannot be an empty string if provided. Maximum 255 characters.
+</ParamField>
+
+<ParamField body="description" type="string">
+  New description for the task.
+</ParamField>
+
+<ParamField body="deadline" type="string">
+  New deadline as an ISO 8601 UTC datetime string, e.g. `2025-09-01T23:59:00Z`.
+</ParamField>
+
+```json Example Request
+{
+  "deadline": "2025-09-01T23:59:00Z",
+  "description": "Updated to include the literature review section"
+}
+```
+
+### Response — 200 OK
+
+<ResponseField name="data" type="object">
+  The updated Task object with all current field values.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `200`
+</ResponseField>
+
+```json Example Response
+{
+  "data": {
+    "id": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+    "studentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Write thesis introduction",
+    "description": "Updated to include the literature review section",
+    "deadline": "2025-09-01T23:59:00.000Z",
+    "isDeleted": false,
+    "createdAt": "2025-07-25T10:00:00.000Z",
+    "updatedAt": "2025-07-25T11:30:00.000Z"
+  },
+  "error": null,
+  "status": 200
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `403 Forbidden` | The task exists but belongs to a different student. |
+| `404 Not Found` | No task with the given `taskId` exists. |
+| `401 Unauthorized` | JWT is missing or expired. |
+
+---
+
+## DELETE /api/v1/tasks/:taskId
+
+Performs a **logical deletion** of a task. The record is not removed from the database — instead `is_deleted` is set to `true` on the task, and all associated micro-objectives have `is_audit_only` set to `true` in the same atomic transaction. This preserves the full audit trail as required by the platform's data integrity policy.
+
+**Authentication:** JWT Bearer
+
+### Path Parameters
+
+<ParamField path="taskId" type="string" required>
+  UUID of the task to soft-delete.
+</ParamField>
+
+### Response — 204 No Content
+
+On success the server returns HTTP `204` with no response body.
+
+<Warning>
+  This operation is **atomic**: both the task's `is_deleted = true` flag and the `is_audit_only = true` flag on all its associated micro-objectives are written in a single database transaction. If the transaction fails, neither change is applied.
+</Warning>
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `403 Forbidden` | The task exists but belongs to a different student. |
+| `404 Not Found` | No task with the given `taskId` exists. |
+| `401 Unauthorized` | JWT is missing or expired. |
+
+<Note>
+  Soft-deleted tasks are excluded from all `GET /api/v1/tasks` and `GET /api/v1/dashboard` responses. Micro-objectives with `is_audit_only = true` are similarly hidden from all active listing endpoints.
+</Note>
+
+---
+
+## GET /api/v1/tasks/:taskId/micro-objectives
+
+Returns the active micro-objectives for a specific task. Only micro-objectives where `is_audit_only = false` are returned — objectives from soft-deleted tasks are excluded. The server verifies task ownership before responding.
+
+**Authentication:** JWT Bearer
+
+### Path Parameters
+
+<ParamField path="taskId" type="string" required>
+  UUID of the parent task.
+</ParamField>
+
+### Response — 200 OK
+
+<ResponseField name="data" type="array">
+  Array of active MicroObjective objects for the task, ordered by `createdAt` ascending.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `200`
+</ResponseField>
+
+```json Example Response
+{
+  "data": [
+    {
+      "id": "9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f",
+      "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+      "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "content": "Draft the motivation section (250 words)",
+      "estimatedMinutes": 20,
+      "isCompleted": false,
+      "isAuditOnly": false,
+      "createdAt": "2025-07-15T09:00:00.000Z"
+    },
+    {
+      "id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+      "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "content": "Identify three core research questions",
+      "estimatedMinutes": 15,
+      "isCompleted": false,
+      "isAuditOnly": false,
+      "createdAt": "2025-07-15T09:00:01.000Z"
+    }
+  ],
+  "error": null,
+  "status": 200
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `403 Forbidden` | The task exists but belongs to a different student. |
+| `404 Not Found` | No task with the given `taskId` exists. |
+| `401 Unauthorized` | JWT is missing or expired. |
+
+---
+
+## PATCH /api/v1/tasks/:taskId/micro-objectives/:moId
+
+Updates a single micro-objective. The server verifies that the parent task belongs to the authenticated student, then confirms that the micro-objective belongs to that task before applying the update. All fields are optional.
+
+**Authentication:** JWT Bearer
+
+### Path Parameters
+
+<ParamField path="taskId" type="string" required>
+  UUID of the parent task.
+</ParamField>
+
+<ParamField path="moId" type="string" required>
+  UUID of the micro-objective to update.
+</ParamField>
+
+### Request Body
+
+<ParamField body="content" type="string">
+  Updated text content describing what the micro-objective requires.
+</ParamField>
+
+<ParamField body="estimatedMinutes" type="integer">
+  Updated time estimate in minutes. Must be a positive integer no greater than `25`.
+</ParamField>
+
+<ParamField body="isCompleted" type="boolean">
+  Set to `true` to mark this micro-objective as completed. Set to `false` to unmark it.
+</ParamField>
+
+```json Example Request — marking as complete
+{
+  "isCompleted": true
+}
+```
+
+### Response — 200 OK
+
+<ResponseField name="data" type="object">
+  The updated MicroObjective object.
+</ResponseField>
+
+<ResponseField name="error" type="null">
+  Always `null` on success.
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  `200`
+</ResponseField>
+
+```json Example Response
+{
+  "data": {
+    "id": "9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f",
+    "taskId": "3f7e1b2c-4a5d-4e8f-9c0b-1a2b3c4d5e6f",
+    "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "content": "Draft the motivation section (250 words)",
+    "estimatedMinutes": 20,
+    "isCompleted": true,
+    "isAuditOnly": false,
+    "createdAt": "2025-07-15T09:00:00.000Z"
+  },
+  "error": null,
+  "status": 200
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `403 Forbidden` | The parent task belongs to a different student. |
+| `404 Not Found` | The task or the micro-objective does not exist, or the micro-objective does not belong to the given task. |
+| `401 Unauthorized` | JWT is missing or expired. |

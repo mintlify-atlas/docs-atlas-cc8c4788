@@ -1,0 +1,227 @@
+---
+title: "MindFlow system architecture and monorepo structure"
+sidebarTitle: "Architecture"
+description: "Three-tier client-server architecture: Next.js frontend, NestJS REST API, and PostgreSQL — containerized in a TypeScript monorepo with shared types."
+---
+
+MindFlow is built on a classic **three-tier client-server architecture**: a React/Next.js presentation layer, a NestJS REST API tier, and a PostgreSQL persistence tier. All three live together inside a single npm workspace monorepo, which means domain interfaces are defined once in a shared package and consumed by both the frontend and the backend without duplication. In development and CI, Docker Compose orchestrates the three services; in production each tier is deployed independently to the provider of choice. The sections below describe how each layer is structured, how the tiers communicate, and how the database schema is organised.
+
+---
+
+## Monorepo layout
+
+The repository root is the npm workspace root. Workspaces are declared in `package.json` as `apps/*` and `packages/*`:
+
+```
+pf_pruebasAseguramientoCalid_SDD/
+├── apps/
+│   ├── frontend/          # Next.js 14 + TypeScript application
+│   └── backend/           # NestJS 10 API + Prisma schema
+│       ├── prisma/
+│       │   └── schema.prisma
+│       ├── src/
+│       │   ├── main.ts    # Bootstrap entrypoint
+│       │   └── ...        # NestJS modules
+│       └── Dockerfile
+├── packages/
+│   └── shared/            # @mindflow/shared — shared TS types and utilities
+├── compose.yml            # Docker Compose for local development
+├── package.json           # Workspace root
+└── .env.example
+```
+
+<CardGroup cols={2}>
+  <Card title="apps/frontend" icon="browser">
+    **Next.js 14 + TypeScript.** Uses the App Router for server and client components, Auth.js for session management, SWR for data fetching, and Shadcn/ui + Tailwind CSS for the component library. Third-party animation libraries are isolated behind the Wrapper Pattern so that the core UI always renders without them.
+  </Card>
+  <Card title="apps/backend" icon="server">
+    **NestJS 10 + Node.js.** Exposes a versioned REST API under `/api/v1/`. Uses Prisma 7 as the ORM, JWT for stateless authentication, Helmet for HTTP security headers, and fast-check for property-based testing. The `main.ts` bootstrap includes a 5-retry connection loop for PostgreSQL.
+  </Card>
+  <Card title="packages/shared" icon="package">
+    **@mindflow/shared.** A lightweight TypeScript package containing the domain interfaces (`Session`, `Task`, `FatigueRecord`, `MicroObjective`, etc.) and utility types shared between the frontend and backend. Must be built before either app — `npm run build --workspace @mindflow/shared`.
+  </Card>
+  <Card title="compose.yml" icon="docker">
+    **Docker Compose (development only).** Defines three services — `db` (PostgreSQL 18 Alpine), `backend`, and `frontend` — on an isolated internal network. Only the frontend exposes a port externally. The `mindflow_pgdata` named volume persists database data across container restarts.
+  </Card>
+</CardGroup>
+
+---
+
+## System architecture
+
+The data flow through MindFlow follows a clear, linear path. The student's browser communicates exclusively with the Next.js frontend over HTTPS. The frontend in turn communicates with the NestJS API over HTTP on the internal Docker network (in production, the frontend proxies all `/api/v1` requests through Next.js rewrites so the backend is never directly exposed to the public internet).
+
+**Request flow — EMA session example:**
+
+1. The student clicks "Start EMA Session" in the browser.
+2. The Next.js frontend sends `POST /api/v1/sessions` with the student's JWT in the `Authorization: Bearer` header.
+3. The NestJS `API_Gateway` (guards + interceptors) validates the JWT, then delegates to the `SessionModule`.
+4. The `SessionModule` calls `DB_Writer` (the Prisma repository layer) to persist a new `Session` record with `is_active: true`.
+5. The `API_Gateway` wraps the response in the standard envelope `{ data, error: null, status: 201 }` and returns it to the frontend.
+6. The student submits a `Fatigue_Score`. If the score is ≥ 4, the `SessionModule` invokes the `TaskDecomposerModule`, which calls an external LLM service over HTTP.
+7. The LLM returns 2–7 micro-objectives. The `DB_Writer` persists them, and the wrapped response flows back to the frontend dashboard.
+
+<Info>
+  Every component in the backend — including the `GlobalExceptionFilter` for errors — wraps its output in the same JSON envelope: `{ "data": <payload or null>, "error": <message or null>, "status": <HTTP code> }`. This invariant holds for every HTTP status code from 200 to 502.
+</Info>
+
+---
+
+## Backend modules
+
+The NestJS application is composed of eight focused modules. Each module encapsulates its own controllers, services, and repository interactions.
+
+<CardGroup cols={2}>
+  <Card title="AuthModule" icon="key">
+    Handles student registration (`POST /api/v1/auth/register`) and login (`POST /api/v1/auth/login`). Signs JWTs with HS256 using `JWT_SECRET` (24-hour expiry). Passwords are hashed with bcrypt at 12 rounds. These two endpoints are explicitly excluded from the global `JwtAuthGuard`.
+  </Card>
+  <Card title="TaskModule" icon="list-check">
+    Full CRUD for academic tasks via `GET`, `POST`, `PATCH`, and `DELETE /api/v1/tasks`. All queries are scoped to the authenticated student's `id`. Tasks are returned sorted by `deadline` ascending. Deletion sets `is_deleted = true` — the record and all associated micro-objectives are preserved for audit purposes.
+  </Card>
+  <Card title="SessionModule" icon="comments">
+    Manages the EMA session lifecycle: start (`POST /api/v1/sessions`), submit fatigue score (`POST /api/v1/sessions/:sessionId/fatigue`), and retrieve history (`GET /api/v1/sessions/history`). Validates that `Fatigue_Score` is an integer in [1, 5] before persisting. Delegates to `TaskDecomposerModule` when score ≥ 4.
+  </Card>
+  <Card title="TaskDecomposerModule" icon="scissors">
+    Calls an external LLM service over HTTP using `AI_SERVICE_API_KEY`. Enforces the cardinality invariant (2–7 micro-objectives) and the duration invariant (each ≤ 25 minutes). Returns HTTP 502 with the original task as fallback if the AI service is unreachable.
+  </Card>
+  <Card title="DashboardModule" icon="chart-line">
+    Serves `GET /api/v1/dashboard` — a single aggregated endpoint that returns active tasks (sorted by deadline), pending micro-objectives grouped by parent task, and the last 30 fatigue scores ordered chronologically. All data is strictly isolated to the authenticated student.
+  </Card>
+  <Card title="NotificationModule" icon="bell">
+    A cron-based worker that fires hourly. Finds tasks with pending micro-objectives due within 24 hours, suppresses dispatch if the student has an active session, enforces the 3-notifications-per-24h cap, and retries failed deliveries up to 3 times. Every dispatch attempt (success or failure) is logged to `notification_logs`.
+  </Card>
+  <Card title="DbWriterModule" icon="database">
+    The single repository layer for all database writes. Uses Prisma's type-safe, parameterised query builder — no raw SQL concatenation anywhere in the codebase. Retries failed writes once after 500 ms. Operates with a connection pool of min=2 / max=10 connections.
+  </Card>
+  <Card title="SessionSerializerModule" icon="brackets-curly">
+    Provides lossless JSON serialisation and deserialisation of `Session` and `FatigueRecord` objects. Guarantees type preservation — `Fatigue_Score` must remain a JSON integer, never a string or float. Rejects payloads with missing required fields or type mismatches without constructing any partial object.
+  </Card>
+</CardGroup>
+
+---
+
+## API layer
+
+The NestJS `main.ts` bootstrap configures the following cross-cutting concerns that apply to every endpoint in the application:
+
+```typescript
+// Global API prefix — all routes begin with /api/v1/
+app.setGlobalPrefix('api/v1');
+
+// HTTP security headers via Helmet
+app.use(helmet());
+
+// CORS restricted to the FRONTEND_URL environment variable
+app.enableCors({ origin: allowedOrigins, credentials: true });
+
+// GlobalExceptionFilter — wraps all errors in { data: null, error, status }
+app.useGlobalFilters(new GlobalExceptionFilter());
+
+// ResponseInterceptor — wraps successful responses in { data, error: null, status }
+app.useGlobalInterceptors(new ResponseInterceptor());
+
+// ValidationPipe — returns HTTP 422 for invalid payloads
+app.useGlobalPipes(new ValidationPipe({
+  whitelist: true,
+  forbidNonWhitelisted: true,
+  transform: true,
+  errorHttpStatusCode: 422,
+}));
+```
+
+**Standard response envelope — every response, every status code:**
+
+```json
+{
+  "data":   { "...": "..." },
+  "error":  null,
+  "status": 200
+}
+```
+
+```json
+{
+  "data":   null,
+  "error":  "Score inválido. Ingresa un valor entre 1 y 5.",
+  "status": 400
+}
+```
+
+| HTTP Status | Trigger |
+|---|---|
+| `201 Created` | Successful resource creation (session, task, registration) |
+| `200 OK` | Successful read or update |
+| `401 Unauthorized` | Missing, invalid, or expired JWT |
+| `403 Forbidden` | Attempting to access another student's resource |
+| `404 Not Found` | Undefined route or non-existent resource |
+| `409 Conflict` | Registration with a duplicate email address |
+| `422 Unprocessable Entity` | Payload fails `ValidationPipe` rules |
+| `502 Bad Gateway` | External LLM service unavailable during task decomposition |
+
+<Warning>
+  CORS is restricted to the origin(s) listed in `FRONTEND_URL`. In production, set this to your exact frontend domain. Multiple origins are supported as a comma-separated list. Wildcard origins are never used.
+</Warning>
+
+---
+
+## Data layer
+
+The Prisma schema defines **six models** mapping to six PostgreSQL tables. All primary keys are UUIDs generated server-side with `gen_random_uuid()`. All timestamps use `TIMESTAMP WITH TIME ZONE` (stored in UTC) to avoid timezone ambiguity in the fatigue history chart.
+
+### Entity overview
+
+```
+students ──────────┬── sessions ──────── fatigue_records
+    │              │        │
+    ├── tasks ─────┤        └── micro_objectives
+    │      │       │
+    │      └───────┘ (task_id + session_id on micro_objectives)
+    │
+    └── notification_logs (student_id + task_id)
+```
+
+### Model reference
+
+| Model | Table | Key fields |
+|---|---|---|
+| `Student` | `students` | `id` (UUID PK), `email` (UNIQUE), `passwordHash`, `createdAt`, `updatedAt` |
+| `Session` | `sessions` | `id`, `studentId` (FK), `startedAt`, `endedAt` (nullable), `isActive` |
+| `FatigueRecord` | `fatigue_records` | `id`, `sessionId` (FK), `studentId` (FK), `fatigueScore` (SmallInt, CHECK 1–5), `recordedAtUtc` |
+| `Task` | `tasks` | `id`, `studentId` (FK), `name`, `description` (nullable), `deadline`, `isDeleted`, `createdAt`, `updatedAt` |
+| `MicroObjective` | `micro_objectives` | `id`, `taskId` (FK), `sessionId` (FK), `content`, `estimatedMinutes` (SmallInt, CHECK 1–25), `isCompleted`, `isAuditOnly` |
+| `NotificationLog` | `notification_logs` | `id`, `studentId` (FK), `taskId` (FK), `status` (pending/sent/failed), `attemptCount`, `dispatchedAtUtc` |
+
+**Referential integrity** is enforced by Prisma relations and database-level foreign key constraints. Cascade rules ensure that deleting a student is not permitted while referencing records exist — tasks are soft-deleted (`is_deleted = true`) to preserve the micro-objective audit trail.
+
+**Connection pool** is configured in Prisma with `min: 2` and `max: 10` connections, balancing availability with resource consumption in the containerised environment.
+
+<Note>
+  PostgreSQL 18 (used in the Docker Compose setup) stores its data at `/var/lib/postgresql/18/docker` inside the container. The `compose.yml` mounts the named volume `mindflow_pgdata` at `/var/lib/postgresql` — the parent directory — to ensure persistence across restarts and forward compatibility with future PostgreSQL major versions.
+</Note>
+
+---
+
+## Frontend architecture
+
+The Next.js 14 frontend uses the **App Router** exclusively. Pages and layouts are co-located with their server and client components in `apps/frontend/src/app/`.
+
+**Auth.js** handles the authentication session on the client side, using the `AUTH_SECRET` environment variable. It stores the JWT returned by the NestJS backend and attaches it as a `Bearer` token to all outbound API requests.
+
+**SWR** is used for all data fetching on the client. It provides automatic revalidation and optimistic updates for dashboard interactions such as marking micro-objectives as complete — the UI reflects the change within 2 seconds without a full page reload.
+
+**Shadcn/ui + Tailwind CSS** form the base design system. All structural UI components (`Button`, `Input`, `Card`, `Dialog`, `Badge`, `Checkbox`, `Tabs`, `Skeleton`) come from Shadcn/ui, which copies component source directly into the repository rather than wrapping an opaque third-party package.
+
+**Wrapper Pattern** — any third-party animation or visual-enhancement library is isolated behind a thin React wrapper component located in `apps/frontend/src/components/wrappers/`. Wrappers are loaded with Next.js `dynamic()` and `{ ssr: false }` so they never block server-side rendering. Each wrapper exposes a minimal, MindFlow-specific prop interface and provides a static Tailwind fallback if the library fails to load:
+
+```
+apps/frontend/src/components/wrappers/
+  SlotTextWrapper.tsx    ← fatigue score slot animation
+  ThemeToggleWrapper.tsx ← dark mode toggle transition
+  IconWrapper.tsx        ← SVG icon library
+  DrawerWrapper.tsx      ← animated side drawers
+  index.ts               ← re-exports all wrappers
+```
+
+<Info>
+  The Wrapper Pattern enforces a strict rule: no core component (`TaskList`, `EmaChat`, `FatigueHistoryChart`) imports a third-party animation library directly. Only wrappers do. This guarantees that the full application compiles and remains functional even if every animation library is removed.
+</Info>

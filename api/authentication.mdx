@@ -1,0 +1,112 @@
+---
+title: "Authenticate API requests with Bearer tokens"
+sidebarTitle: "Authentication"
+description: "Obtain a JWT from POST /api/v1/auth/login and pass it in the Authorization: Bearer header. Tokens expire after 24 hours and require re-authentication."
+---
+
+MindFlow uses stateless JSON Web Tokens (JWT) to authenticate every protected API request. The flow is straightforward: call `POST /api/v1/auth/register` once to create an account, then call `POST /api/v1/auth/login` to receive a signed token. Include that token in the `Authorization` header of all subsequent requests. When the token expires after 24 hours, log in again to receive a fresh one.
+
+## Obtaining a token
+
+Send a `POST` request to `/api/v1/auth/login` with a valid email and password. On success you receive a signed JWT in the response envelope:
+
+```bash
+curl -X POST https://your-backend.com/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"student@university.edu","password":"SecurePass123!"}'
+```
+
+```json
+{
+  "data": { "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+  "error": null,
+  "status": 200
+}
+```
+
+## Using the token
+
+Pass the token as a Bearer credential in the `Authorization` header on every protected request:
+
+```
+Authorization: Bearer <token>
+```
+
+The global `JwtAuthGuard` inspects this header on every route that is not explicitly marked `@Public()`. If the header is absent, malformed, or carries an expired token, the API immediately returns `401 Unauthorized`.
+
+<Warning>
+  Never expose your JWT in a URL query parameter, application logs, or client-side storage that is accessible to third-party scripts. Treat it with the same care as a password.
+</Warning>
+
+## Token payload
+
+Tokens are signed with the HS256 algorithm. Once decoded, the payload conforms to the `StudentPayload` interface:
+
+```typescript
+interface StudentPayload {
+  studentId: string; // UUID — uniquely identifies the student account
+  email: string;     // normalized (trimmed, lowercased) email address
+  iat: number;       // issued-at Unix timestamp (seconds)
+  exp: number;       // expiry Unix timestamp — always iat + 86400
+}
+```
+
+The `studentId` field is attached to every incoming request by `JwtAuthGuard` and is used by downstream services to enforce per-student data isolation. Requests that attempt to access another student's resources receive `403 Forbidden`.
+
+## Token expiry
+
+Every token expires exactly **24 hours** after it is issued (`exp = iat + 86400`). Once expired, the API returns:
+
+```json
+{
+  "data": null,
+  "error": "Token de autenticación inválido o expirado. Por favor, inicie sesión nuevamente.",
+  "status": 401
+}
+```
+
+Re-authenticate by calling `POST /api/v1/auth/login` again. There is no refresh-token mechanism — a fresh login always produces a new 24-hour token.
+
+## Public routes
+
+Only two routes bypass `JwtAuthGuard` entirely:
+
+| Method | Path | Reason |
+|---|---|---|
+| POST | /api/v1/auth/register | Creates a new account — no prior token exists |
+| POST | /api/v1/auth/login | Issues the initial token — credentials are the proof of identity |
+
+In the NestJS source, these routes are decorated with `@Public()`. The guard checks for this decorator before attempting any token verification, and also performs an explicit path-level check as a belt-and-suspenders safeguard. Every other route in the system goes through full JWT verification.
+
+<Note>
+  The `@Public()` decorator sets a metadata key on the route handler. `JwtAuthGuard` reads that key via NestJS's `Reflector` before extracting or verifying any token. If the key is present, the guard short-circuits and returns `true` immediately.
+</Note>
+
+## Complete example: register → login → use token
+
+The following three steps take a new student from zero to making authenticated API calls:
+
+```bash
+# 1. Register — creates the student account
+curl -X POST https://your-backend.com/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"student@university.edu","password":"SecurePass123!"}'
+
+# 2. Login — returns the signed JWT
+curl -X POST https://your-backend.com/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"student@university.edu","password":"SecurePass123!"}'
+
+# 3. Use token — call any protected endpoint
+curl https://your-backend.com/api/v1/tasks \
+  -H "Authorization: Bearer <token_from_login_response>"
+```
+
+## Error reference
+
+| Status | Trigger | Notes |
+|---|---|---|
+| 401 Unauthorized | Invalid credentials at login | Message is intentionally generic — does not reveal which field is wrong |
+| 401 Unauthorized | Missing `Authorization` header on protected route | Include `Authorization: Bearer <token>` |
+| 401 Unauthorized | Expired or tampered token | Re-authenticate with `POST /api/v1/auth/login` |
+| 409 Conflict | Registering with an email already in use | Each email maps to exactly one student account |

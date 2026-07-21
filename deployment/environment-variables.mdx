@@ -1,0 +1,129 @@
+---
+title: "Environment variables reference for MindFlow"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for all environment variables used by the MindFlow backend and frontend, with descriptions, required/optional status, and example values."
+---
+
+MindFlow uses environment variables to configure every deployment-specific value — database credentials, secret keys, service URLs, and feature flags. Secrets are never committed to the repository. Instead, each developer copies an example file locally, and production deployments read variables directly from the hosting provider's secret vault. The `.env` files on disk are listed in `.gitignore` and must never be pushed.
+
+## Initial setup
+
+Copy the root-level example file to create your local environment configuration:
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` in your editor and fill in the values marked as required below. Each application also ships its own example file (`apps/backend/.env.example` and `apps/frontend/.env.example`) if you prefer to manage variables per workspace rather than from the root.
+
+## Backend environment variables
+
+These variables are read by the NestJS application at runtime. They must be present in the process environment before the server starts.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | **Yes** | — | Full PostgreSQL connection string. Format: `postgresql://<user>:<password>@<host>:<port>/<database>`. Add SSL parameters (e.g. `?sslmode=require`) per provider in production. |
+| `JWT_SECRET` | **Yes** | — | Random string of at least 32 characters used to sign and verify JWTs. Must be different from `AUTH_SECRET`. |
+| `FRONTEND_URL` | **Yes** | `http://localhost:3000` | Comma-separated list of origins the backend CORS policy permits. In production, set this to your exact frontend domain only. |
+| `PORT` | No | `3001` | HTTP port the NestJS server listens on. Hosted platforms (Render, Railway) typically assign this automatically via the environment. |
+| `AI_SERVICE_API_KEY` | Conditional | — | API key for the external LLM provider (OpenAI, Anthropic, etc.). Required when the Task Decomposer feature is enabled; can be left blank otherwise. |
+| `NODE_ENV` | No | `development` | Runtime mode. Set to `production` in all production deployments to enable optimisations and disable development-only logging. |
+
+### Backend example values
+
+```bash
+NODE_ENV=development
+PORT=3001
+DATABASE_URL=postgresql://mindflow_user:change_me@localhost:5432/mindflow?connection_limit=10&pool_timeout=20
+JWT_SECRET=replace_with_at_least_32_random_characters
+FRONTEND_URL=http://localhost:3000
+AI_SERVICE_API_KEY=
+```
+
+## Frontend environment variables
+
+These variables are read by the Next.js application. Variables prefixed with `NEXT_PUBLIC_` are embedded into the client-side JavaScript bundle at **build time** — they must be set before the build runs and cannot be changed without rebuilding.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `NEXT_PUBLIC_API_URL` | **Yes** | `http://backend:3001/api/v1` | Public URL of the backend API including the `/api/v1` prefix. Baked into the Next.js bundle at build time — the browser uses this to reach the backend (via the Next.js proxy in Docker Compose, or directly in production). |
+| `NEXT_PUBLIC_APP_URL` | **Yes** | `http://localhost:3000` | Public URL of the frontend application. Used by Auth.js to construct callback and redirect URLs. |
+| `AUTH_SECRET` | **Yes** | — | Random string of at least 32 characters used by Auth.js to encrypt session tokens. Must be different from `JWT_SECRET`. |
+| `AUTH_DEBUG` | No | `false` | Enables Auth.js debug logging when set to `true`. Must be `false` in production — enabling it leaks session data to the server logs. |
+
+<Warning>
+  `NEXT_PUBLIC_*` variables are embedded in the compiled JavaScript that is sent to every user's browser. **Never store secrets, API keys, or tokens in a `NEXT_PUBLIC_*` variable.** Use server-side variables (without the prefix) for anything that must remain confidential.
+</Warning>
+
+### Frontend example values
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:3001/api/v1
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+AUTH_SECRET=replace-with-a-random-secret
+AUTH_DEBUG=false
+```
+
+## Docker Compose extra variables
+
+The following additional variables are only used when running the full stack with `docker compose`. They configure the PostgreSQL service and are not read by the application code directly — the application always connects via `DATABASE_URL`.
+
+| Variable | Description |
+|---|---|
+| `POSTGRES_DB` | Name of the PostgreSQL database to create (e.g. `mindflow`) |
+| `POSTGRES_USER` | PostgreSQL username (e.g. `mindflow_user`) |
+| `POSTGRES_PASSWORD` | Password for the PostgreSQL user — use a strong random value even locally |
+
+### Root `.env.example` (used by Docker Compose)
+
+```bash
+# PostgreSQL credentials used by the db service
+POSTGRES_DB=mindflow
+POSTGRES_USER=mindflow_user
+POSTGRES_PASSWORD=your_postgres_password
+
+# Full connection URL consumed by the NestJS backend (Prisma)
+DATABASE_URL=postgresql://user:password@db:5432/mindflow
+
+# Authentication
+JWT_SECRET=your_jwt_secret_here
+
+# AI Service
+AI_SERVICE_API_KEY=your_ai_api_key_here
+
+# CORS
+FRONTEND_URL=http://localhost:3000
+
+# Backend
+PORT=3001
+
+# Frontend / Auth.js
+NEXT_PUBLIC_API_URL=http://localhost:3001/api/v1
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+AUTH_SECRET=replace_with_a_second_random_secret_of_at_least_32_characters
+AUTH_DEBUG=false
+```
+
+## Generating secure secret values
+
+<Warning>
+  `JWT_SECRET` and `AUTH_SECRET` must be **distinct** random values. Using the same string for both weakens the security boundary between the NestJS JWT layer and the Auth.js session layer.
+</Warning>
+
+Generate a cryptographically secure random secret with OpenSSL:
+
+```bash
+openssl rand -base64 32
+```
+
+Run this command twice — once for `JWT_SECRET` and once for `AUTH_SECRET` — and store each output in your provider's secret vault. Never reuse the same value for both variables.
+
+<Note>
+  Alternatively, you can generate `AUTH_SECRET` using the Auth.js CLI:
+
+  ```bash
+  npx auth secret
+  ```
+
+  This outputs a suitable random string and can optionally write it directly to your `.env` file.
+</Note>

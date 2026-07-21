@@ -1,0 +1,123 @@
+---
+title: "Set up MindFlow for local development without Docker"
+sidebarTitle: "Local Development"
+description: "Run the MindFlow backend and frontend locally using Node.js workspaces, with a local or remote PostgreSQL instance and environment variables loaded from .env files."
+---
+
+Running MindFlow locally without Docker gives you the fastest iteration cycle — hot-reload works for both the NestJS backend and the Next.js frontend, and you can attach a debugger directly to either process. This guide walks you through cloning the monorepo, installing dependencies, configuring environment variables, and starting each application in development mode.
+
+## Prerequisites
+
+Before you begin, make sure the following are available on your machine:
+
+- **Node.js 20 or later** — the monorepo tooling and both applications require it
+- **npm 9 or later** — workspace hoisting relies on features added in npm 9
+- **A running PostgreSQL instance** — local (e.g. via Homebrew, `pg_ctl`, or a Docker container running separately) or a hosted service such as Neon or Supabase
+
+## Getting started
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the repository from GitHub and change into the project directory:
+
+    ```bash
+    git clone https://github.com/J0S3-LEON/pf_pruebasAseguramientoCalid_SDD.git
+    cd pf_pruebasAseguramientoCalid_SDD
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Install all workspace dependencies from the lock file. Running `npm ci` ensures a clean, reproducible install that matches exactly what is committed:
+
+    ```bash
+    npm ci
+    ```
+  </Step>
+
+  <Step title="Copy and configure environment files">
+    Copy the root-level example file to create your local environment file, then open `.env` and fill in the required values:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    At a minimum you must set the following variables:
+
+    | Variable | Purpose |
+    |---|---|
+    | `DATABASE_URL` | Full PostgreSQL connection string (e.g. `postgresql://user:pass@localhost:5432/mindflow`) |
+    | `JWT_SECRET` | Random string of at least 32 characters for signing JWTs |
+    | `FRONTEND_URL` | CORS origin allowed by the backend — `http://localhost:3000` for local development |
+    | `AI_SERVICE_API_KEY` | API key for the LLM provider if the Task Decomposer feature is enabled |
+
+    <Note>
+      `DATABASE_URL` must point to a PostgreSQL instance that is already running and reachable before you start the backend. The backend will retry the connection up to five times (with a 5-second pause between attempts), but the database must be accessible at startup.
+    </Note>
+  </Step>
+
+  <Step title="Build the shared package">
+    The `@mindflow/shared` package contains types and utilities consumed by both the backend and frontend. It must be compiled before either application can start:
+
+    ```bash
+    npm run build --workspace @mindflow/shared
+    ```
+  </Step>
+
+  <Step title="Generate the Prisma client">
+    Generate the type-safe Prisma client from the database schema. This step is required on first setup and any time the Prisma schema changes:
+
+    ```bash
+    npm run prisma:generate --workspace @mindflow/backend
+    ```
+  </Step>
+
+  <Step title="Run database migrations">
+    Apply all pending Prisma migrations to your PostgreSQL instance to create or update the schema:
+
+    ```bash
+    npm run prisma:migrate:deploy --workspace @mindflow/backend
+    ```
+  </Step>
+
+  <Step title="Start the backend (terminal 1)">
+    Start the NestJS development server with hot-reload. Leave this terminal open:
+
+    ```bash
+    npm run dev --workspace @mindflow/backend
+    ```
+
+    The API will be available at `http://localhost:3001/api/v1` (or the port set in `PORT`).
+  </Step>
+
+  <Step title="Start the frontend (terminal 2)">
+    In a second terminal, start the Next.js development server:
+
+    ```bash
+    npm run dev --workspace @mindflow/frontend
+    ```
+
+    The application will be available at [http://localhost:3000](http://localhost:3000).
+  </Step>
+</Steps>
+
+## Development scripts
+
+The following scripts are available from the repository root and apply across all workspaces:
+
+| Command | Description |
+|---|---|
+| `npm run lint` | Run ESLint across all workspaces |
+| `npm run format` | Apply Prettier formatting across all workspaces |
+| `npm test` | Run the full Jest test suite |
+| `npm run test:coverage` | Run tests and generate a coverage report |
+| `npm run prisma:generate --workspace @mindflow/backend` | Regenerate the Prisma client after any schema change |
+
+<Tip>
+  If you want to populate the database with realistic test data, run the seed script after migrations have been applied:
+
+  ```bash
+  npm run seed --workspace @mindflow/backend
+  ```
+
+  This is useful for exploring the UI or writing integration tests against a non-empty dataset.
+</Tip>

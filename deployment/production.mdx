@@ -1,0 +1,179 @@
+---
+title: "Deploy MindFlow to production environments"
+sidebarTitle: "Production"
+description: "Deploy MindFlow's frontend on Vercel, backend on Render or Railway, and use a managed PostgreSQL provider such as Neon or Supabase."
+---
+
+MindFlow's three components — the Next.js frontend, the NestJS backend, and the PostgreSQL database — are deployed independently in production. The `compose.yml` file at the repository root is a local-development convenience only and is not used in any production workflow. Each component can be hosted on the platform that best suits it, and they communicate over the public internet using environment variables that are configured per deployment.
+
+## Recommended providers
+
+| Component | Recommended providers |
+|---|---|
+| **Frontend** | [Vercel](https://vercel.com) — native Next.js support, automatic builds on push |
+| **Backend** | [Render](https://render.com) or [Railway](https://railway.app) — Node.js web services with build/release hooks |
+| **Database** | [Neon](https://neon.tech), [Supabase](https://supabase.com), or a provider-managed PostgreSQL instance |
+
+## Database setup
+
+Set up and migrate the database before deploying the backend. All subsequent backend deployments must run migrations before new replicas start serving traffic.
+
+<Steps>
+  <Step title="Create a managed PostgreSQL instance">
+    Create a PostgreSQL database on your chosen provider (Neon, Supabase, or similar). Copy the full connection URL provided by the dashboard and store it as `DATABASE_URL` in your deployment platform's secret store.
+  </Step>
+
+  <Step title="Enable TLS/SSL">
+    Most managed PostgreSQL providers require TLS connections. Follow your provider's documentation to append the necessary SSL parameters to `DATABASE_URL`. For example, Neon connections typically include `?sslmode=require`.
+  </Step>
+
+  <Step title="Run migrations before starting replicas">
+    Execute the following once per release, before any new backend replicas start accepting traffic. Running migrations as a pre-deploy or release command ensures the schema is updated before code that depends on it goes live:
+
+    ```bash
+    npm ci && npm run prisma:generate --workspace @mindflow/backend && npm run prisma:migrate:deploy --workspace @mindflow/backend
+    ```
+
+    <Warning>
+      Never run `prisma migrate dev` in production. That command is for local development only — it generates migration files, prompts interactively, and can reset the database. In production, always use `prisma migrate deploy`.
+    </Warning>
+  </Step>
+</Steps>
+
+## Backend deployment
+
+The NestJS backend must be built from the repository root so that the `@mindflow/shared` workspace package is available during compilation.
+
+<Steps>
+  <Step title="Set the build root to the repository root">
+    Configure your deployment platform to use the repository root (not `apps/backend`) as the build directory. The backend imports from `@mindflow/shared`, so the full monorepo context is required at build time.
+  </Step>
+
+  <Step title="Configure the build command">
+    Use the following build command, which installs dependencies, compiles the shared package, generates the Prisma client, and compiles the backend:
+
+    ```bash
+    npm ci && npm run build --workspace @mindflow/shared && npm run prisma:generate --workspace @mindflow/backend && npm run build --workspace @mindflow/backend
+    ```
+  </Step>
+
+  <Step title="Configure the release / pre-deploy command">
+    Set the release or pre-deploy hook to run migrations. This runs after the build succeeds but before traffic is switched to the new version:
+
+    ```bash
+    npm run prisma:migrate:deploy --workspace @mindflow/backend
+    ```
+  </Step>
+
+  <Step title="Configure the start command">
+    Start the compiled backend in production mode:
+
+    ```bash
+    npm run start:prod --workspace @mindflow/backend
+    ```
+  </Step>
+
+  <Step title="Deploying with Docker">
+    If your platform uses container-based deployments, point the platform at the backend Dockerfile. The build context must be the repository root:
+
+    ```bash
+    docker build -f apps/backend/Dockerfile -t mindflow-backend .
+    ```
+
+    The multi-stage `apps/backend/Dockerfile` produces a minimal `node:20-alpine` runner image that runs the compiled backend as a non-root user and listens on port `3001`.
+  </Step>
+
+  <Step title="Set backend environment variables">
+    Provide the following environment variables in your platform's secret management UI or vault:
+
+    | Variable | Notes |
+    |---|---|
+    | `NODE_ENV` | Set to `production` |
+    | `DATABASE_URL` | Full PostgreSQL connection string with SSL parameters |
+    | `JWT_SECRET` | Random string ≥ 32 characters — must differ from `AUTH_SECRET` |
+    | `FRONTEND_URL` | Comma-separated list of allowed CORS origins (production domain only) |
+    | `PORT` | The platform typically assigns this automatically |
+    | `AI_SERVICE_API_KEY` | Required if the Task Decomposer feature is enabled |
+  </Step>
+</Steps>
+
+## Frontend deployment on Vercel
+
+<Steps>
+  <Step title="Select Next.js as the framework">
+    When creating a new Vercel project, choose **Next.js** as the framework preset. Vercel will automatically detect the Next.js application and configure build settings.
+  </Step>
+
+  <Step title="Set the project root to the repository root">
+    Leave the Vercel project root pointing at the repository root — do not change it to `apps/frontend`. This preserves the npm workspace structure and allows the build to resolve `@mindflow/shared`.
+  </Step>
+
+  <Step title="Configure the build command">
+    Override the default build command to build the shared package first:
+
+    ```bash
+    npm run build --workspace @mindflow/shared && npm run build --workspace @mindflow/frontend
+    ```
+  </Step>
+
+  <Step title="Set frontend environment variables">
+    Add the following variables in the Vercel project settings before triggering a build:
+
+    | Variable | Notes |
+    |---|---|
+    | `NEXT_PUBLIC_API_URL` | Public URL of the backend including `/api/v1`, e.g. `https://api.example.com/api/v1` |
+    | `NEXT_PUBLIC_APP_URL` | Public URL of the frontend, e.g. `https://example.com` |
+    | `AUTH_SECRET` | Random string ≥ 32 characters — must differ from `JWT_SECRET` |
+    | `AUTH_DEBUG` | Set to `false` |
+
+    <Warning>
+      `NEXT_PUBLIC_*` variables are baked into the JavaScript bundle at **build time**. They must be set in Vercel before the build runs — updating them in the Vercel dashboard after a build has completed requires a new build to take effect. Never store secret values in `NEXT_PUBLIC_*` variables; they are visible to anyone who loads the page.
+    </Warning>
+  </Step>
+</Steps>
+
+## Pre-deployment verification
+
+Run the following commands from the repository root to validate that the full build pipeline works before triggering a production deployment:
+
+<Steps>
+  <Step title="Full build check">
+    Run a clean install and build of all packages:
+
+    ```bash
+    npm ci && npm run prisma:generate --workspace @mindflow/backend && npm run build --workspace @mindflow/shared && npm run build --workspace @mindflow/backend && npm run build --workspace @mindflow/frontend
+    ```
+  </Step>
+
+  <Step title="Run backend tests">
+    Execute the backend test suite in band (no parallel workers) to catch any regressions before deploying:
+
+    ```bash
+    npm test --workspace @mindflow/backend -- --runInBand
+    ```
+  </Step>
+
+  <Step title="Build Docker images">
+    Build the Docker images from the repository root to verify the Dockerfiles resolve correctly in the monorepo context:
+
+    ```bash
+    docker build -f apps/backend/Dockerfile -t mindflow-backend .
+    ```
+  </Step>
+</Steps>
+
+## Production checklist
+
+Review every item below before promoting a release to production.
+
+<Warning>
+  **Critical security and correctness requirements:**
+
+  - `.env` is **not** versioned and all secrets are stored in the provider's secret vault — never in the repository.
+  - `JWT_SECRET` and `AUTH_SECRET` are **different**, randomly generated, and at least 32 characters long.
+  - `FRONTEND_URL` contains **only** the authorized production domain(s) — no localhost or staging URLs.
+  - `AUTH_DEBUG=false` and `NODE_ENV=production` are set in the backend and frontend environments.
+  - `prisma migrate deploy` has finished successfully **before** any new replica starts serving traffic.
+  - Both the backend and frontend builds pass from a clean `npm ci` install.
+  - Backups, health checks, logs, and alerts are active on the database and backend service.
+</Warning>

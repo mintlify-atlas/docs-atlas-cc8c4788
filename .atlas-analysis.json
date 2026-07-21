@@ -1,0 +1,109 @@
+{
+  "projectType": "saas",
+  "projectName": "MindFlow",
+  "projectDescription": "An AI-powered web platform that mitigates academic procrastination through adaptive micro-interactions, using a real-time EMA chatbot to assess cognitive fatigue and automatically decompose complex tasks into manageable micro-objectives.",
+  "theme": "luma",
+  "primaryColor": "#6366F1",
+  "lightColor": "#EEF2FF",
+  "darkColor": "#1E1B4B",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/authentication",
+              "features/task-management",
+              "features/ema-session",
+              "features/task-decomposer",
+              "features/dashboard",
+              "features/notifications"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/local-development",
+              "deployment/docker",
+              "deployment/production",
+              "deployment/environment-variables"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "testing/strategy",
+              "testing/property-based-testing",
+              "testing/running-tests"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/auth",
+              "api/tasks",
+              "api/sessions",
+              "api/dashboard",
+              "api/notifications"
+            ]
+          },
+          {
+            "group": "Data Models",
+            "pages": [
+              "api/data-models"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "EMA chatbot that collects real-time cognitive fatigue scores (1–5 scale)",
+    "AI-powered task decomposer that splits complex tasks into micro-objectives (≤25 min each) when fatigue ≥ 4",
+    "Student dashboard with active tasks, pending micro-objectives, and 30-session fatigue history chart",
+    "JWT-based authentication with bcrypt password hashing and 24-hour token expiry",
+    "NestJS REST API under /api/v1/ with consistent JSON envelope responses",
+    "Prisma ORM with PostgreSQL, parameterized queries, and referential integrity constraints",
+    "Property-based testing (PBT) with fast-check covering 27 correctness properties",
+    "Containerized monorepo with Docker Compose for reproducible local development",
+    "Notification service with frequency limiting (≤3 per 24h) and active-session suppression",
+    "Session serializer with strict round-trip and type-preservation guarantees"
+  ],
+  "publicApiSurface": [
+    "POST /api/v1/auth/register",
+    "POST /api/v1/auth/login",
+    "GET /api/v1/tasks",
+    "POST /api/v1/tasks",
+    "PATCH /api/v1/tasks/:taskId",
+    "DELETE /api/v1/tasks/:taskId",
+    "GET /api/v1/tasks/:taskId/micro-objectives",
+    "PATCH /api/v1/tasks/:taskId/micro-objectives/:moId",
+    "POST /api/v1/sessions",
+    "POST /api/v1/sessions/:sessionId/fatigue",
+    "GET /api/v1/sessions",
+    "GET /api/v1/dashboard",
+    "GET /api/v1/notifications"
+  ]
+}

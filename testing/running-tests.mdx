@@ -1,0 +1,156 @@
+---
+title: "Run and interpret MindFlow test suites"
+sidebarTitle: "Running Tests"
+description: "Commands to run unit, integration, property-based, and smoke tests across the MindFlow monorepo, including coverage reports and individual test targeting."
+---
+
+MindFlow's test suites are organized in a Jest multi-project monorepo. The root `jest.config.js` delegates to per-workspace configurations — `apps/backend`, `apps/frontend`, and `packages/shared` — so you can run everything at once from the repo root, or target a single workspace for faster feedback during development. The sections below cover every command you need, from a full suite run to a single spec file.
+
+## All test commands
+
+<CodeGroup>
+
+```bash Root — run all tests
+# Runs all tests across all workspaces via the root Jest config
+npm test
+```
+
+```bash Root — coverage report
+# Aggregated coverage for all workspaces (outputs text, lcov, and HTML)
+npm run test:coverage
+```
+
+```bash Backend — all tests
+# Runs only the backend workspace tests
+npm test --workspace @mindflow/backend
+```
+
+```bash Backend — coverage
+# Backend tests with coverage report
+npm run test:cov --workspace @mindflow/backend
+```
+
+```bash Backend — watch mode
+# Re-runs affected tests on every file save (ideal for TDD)
+npm run test:watch --workspace @mindflow/backend
+```
+
+```bash Backend — sequential (for integration tests)
+# Runs all backend tests in a single process — required for DB integration tests
+npm test --workspace @mindflow/backend -- --runInBand
+```
+
+</CodeGroup>
+
+## Test file patterns
+
+Jest discovers tests by filename pattern. Each category uses a distinct suffix so you can target or exclude entire categories with `--testPathPattern`.
+
+| Category | File pattern | Description |
+|---|---|---|
+| **Unit tests** | `*.service.spec.ts`, `*.controller.spec.ts` | Single service or controller in isolation with mocked dependencies |
+| **Property-based tests** | `*.property.spec.ts` | fast-check properties run with `numRuns ≥ 5` (100 for non-async) |
+| **Smoke tests** | `*.smoke.spec.ts` | Static config validation — Dockerfile, Prisma schema, `compose.yml` |
+| **Integration tests** | `integration/*.latency.spec.ts` | DB writer latency over 10 real writes; requires live PostgreSQL |
+
+## Running a single spec file
+
+Target any spec file directly with `npx jest` and its workspace-relative path:
+
+```bash
+npx jest apps/backend/src/auth/__tests__/auth.property.spec.ts
+```
+
+```bash
+npx jest apps/backend/src/tasks/__tests__/task.service.spec.ts
+```
+
+```bash
+npx jest apps/backend/src/__tests__/api-gateway.property.spec.ts
+```
+
+## Running tests by pattern
+
+Use `--testPathPattern` to select all files whose path matches a substring:
+
+```bash
+# Run all property-based tests
+npx jest --testPathPattern="property"
+
+# Run all smoke tests
+npx jest --testPathPattern="smoke"
+
+# Run all integration/latency tests
+npx jest --testPathPattern="latency"
+
+# Run all auth-related tests (unit + property)
+npx jest --testPathPattern="auth"
+```
+
+## Environment setup for integration tests
+
+<Note>
+Integration and latency tests connect to a real PostgreSQL database. You must set the `DATABASE_URL` environment variable before running them:
+
+```bash
+export DATABASE_URL="postgresql://mindflow:password@localhost:5432/mindflow_dev"
+npm test --workspace @mindflow/backend -- --runInBand --testPathPattern="latency"
+```
+
+If `DATABASE_URL` is not set, the Prisma client will throw a connection error at module initialization and the test will fail immediately.
+</Note>
+
+## Smoke tests are DB-independent
+
+<Note>
+Smoke tests validate **static configuration artifacts** only — they do not connect to PostgreSQL, spin up Docker containers, or load environment variables. You can run them on any machine, including a bare CI runner with no infrastructure:
+
+```bash
+npx jest --testPathPattern="smoke"
+```
+
+Smoke tests check: `docker-compose.yml` service definitions, absence of hardcoded secrets in the backend container config, Prisma schema pool settings (`min: 2, max: 10`), and the presence of the NestJS vs FastAPI comparison section in the design document.
+</Note>
+
+## Parallel vs. sequential execution
+
+<Tip>
+Always pass `--runInBand` when running integration or latency tests. By default, Jest runs spec files in parallel worker processes — multiple workers competing for the same PostgreSQL connection pool can exhaust connections, cause spurious timeout failures, and produce misleading latency measurements.
+
+```bash
+npm test --workspace @mindflow/backend -- --runInBand
+```
+
+Unit and PBT tests are safe to run in parallel (the default) because they use in-memory Prisma mocks and never open a real database connection.
+</Tip>
+
+## What a passing PBT run looks like
+
+When all properties pass, fast-check is silent in the Jest output — you see the standard green checkmark for each `it` block. When a property **fails**, fast-check prints a detailed report before throwing:
+
+```
+Property failed after 12 tests
+{ seed: 1837462910, path: "11:2:0", endOnFailure: true }
+Counterexample: [{ id: "00000000-0000-0000-0000-000000000000", score: 6, ... }]
+Shrunk 3 time(s)
+Got error: expect(received).toEqual(expected)
+```
+
+The output tells you:
+- **seed** — use this value with `{ seed: 1837462910 }` to reproduce the exact same sequence
+- **path** — the position in fast-check's internal shrink tree where the minimal counterexample was found
+- **Counterexample** — the smallest input that still triggers the failure (fast-check shrinks automatically)
+- **Shrunk N time(s)** — how many shrink steps were taken to reach the minimal example
+
+## Latency test behavior
+
+<Warning>
+Latency tests measure **actual database write latency** — the time for 10 consecutive `DBWriterService` operations against a live PostgreSQL instance. The design specification targets an average of 2–3 seconds over 10 writes under normal load conditions.
+
+These tests **may flake** on:
+- Very slow CI runners with limited CPU or I/O resources
+- PostgreSQL instances under heavy concurrent load
+- Cold Docker volumes where the first write incurs extra overhead
+
+If you see consistent failures above 3 seconds in CI, check the runner's available resources and ensure the PostgreSQL container has warmed up (run a health-check query before the test suite starts). Do **not** lower the latency threshold — it reflects a real product requirement (Requirements 3.3, 7.1).
+</Warning>

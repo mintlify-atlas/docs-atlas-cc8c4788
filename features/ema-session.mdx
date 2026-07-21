@@ -1,0 +1,163 @@
+---
+title: "EMA sessions and cognitive fatigue assessment"
+sidebarTitle: "EMA Sessions"
+description: "The MindFlow EMA chatbot starts an interactive session, collects a fatigue score from 1 to 5, and triggers task decomposition when fatigue is high."
+---
+
+MindFlow uses Ecological Momentary Assessment (EMA) to measure a student's cognitive state at the moment of interaction, rather than relying on retrospective self-reporting. When a student starts a session, the EMA chatbot presents a single prompt asking them to rate their mental fatigue on a scale from 1 (low fatigue) to 5 (high fatigue). This score is validated, persisted with a UTC timestamp, and used to decide whether the Task Decomposer should break active tasks into smaller micro-objectives. The entire score submission flow — from validation to persistence to task-flow transition — completes in under one second after the database write is confirmed.
+
+## What EMA means in MindFlow
+
+EMA is a research methodology that captures self-reported data in real time and in the participant's natural context. In MindFlow, "momentary" means the student is asked about their fatigue *right now*, at the start of each study session, rather than being asked to recall how they felt last week. This real-time snapshot drives the adaptive decomposition logic: a student reporting high fatigue receives smaller, more achievable work units; a student reporting low fatigue receives their tasks in original form.
+
+## Session lifecycle
+
+<Steps>
+
+### Start a session
+
+The student triggers `POST /api/v1/sessions`. The EMA Bot creates a new session record in the database with `is_active = true` and immediately closes any previously open session for that student (only one session can be active at a time). The response returns the `sessionId` and the opening chatbot prompt.
+
+### Chatbot prompts for a fatigue score
+
+The API responds with `{ sessionId, prompt }` where `prompt` is the question `"¿Cómo te sientes hoy? (1-5)"`. The frontend renders this as the first message in the chat interface.
+
+### Student submits a fatigue score
+
+The student submits an integer between 1 and 5 to `POST /api/v1/sessions/:sessionId/fatigue`. The `FatigueSubmitDto` validates the input before it reaches the service — non-integers, decimals, strings, booleans, and `null` are all rejected at this layer with `422 Unprocessable Entity`.
+
+### Score is persisted
+
+The service verifies that the session exists, belongs to the authenticated student, and is still active. It then creates a `FatigueRecord` containing the score, a UTC timestamp, the `sessionId`, and the `studentId`. The session is marked `is_active = false` after the record is saved.
+
+### Task interaction flow begins
+
+Based on the score, the system transitions to the task flow. If the score is ≥ 4, the Task Decomposer is invoked automatically. If the score is ≤ 3, the student's active tasks are presented in their original form. The API acknowledges the score and includes the result (micro-objectives or original task) in the response within 1 second of persistence confirmation.
+
+</Steps>
+
+## Starting a session
+
+```
+POST /api/v1/sessions
+```
+
+No request body is required. The `studentId` is read from the JWT payload.
+
+**Response — 201 Created**
+
+```json
+{
+  "data": {
+    "sessionId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "prompt": "¿Cómo te sientes hoy? (1-5)"
+  },
+  "error": null,
+  "status": 201
+}
+```
+
+```typescript
+// Start a new EMA session
+const response = await fetch("https://api.mindflow.app/api/v1/sessions", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+});
+
+const { data } = await response.json();
+const sessionId: string = data.sessionId;
+// Show data.prompt to the student in the chat interface
+```
+
+## Submitting a fatigue score
+
+```
+POST /api/v1/sessions/:sessionId/fatigue
+```
+
+**Request body**
+
+| Field | Type | Required | Rules |
+|-------|------|----------|-------|
+| `score` | `integer` | ✅ Yes | Integer in `[1, 5]` — no strings, no decimals, no `null` |
+| `taskId` | `string (UUID)` | No | Optional: the specific task to evaluate. Defaults to the student's earliest-deadline active task. |
+
+```typescript
+// Submit a fatigue score for the active session
+const response = await fetch(
+  `https://api.mindflow.app/api/v1/sessions/${sessionId}/fatigue`,
+  {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ score: 4 }),
+  }
+);
+
+const { data } = await response.json();
+// data.score          → 4
+// data.recordedAtUtc  → "2025-07-18T14:32:00.000Z"
+// data.microObjectives → [...] if score >= 4, else []
+// data.task           → original task object if score <= 3 or AI failed
+```
+
+**Response — 201 Created**
+
+```json
+{
+  "data": {
+    "fatigueRecordId": "a1b2c3d4-...",
+    "sessionId": "3fa85f64-...",
+    "score": 4,
+    "recordedAtUtc": "2025-07-18T14:32:00.000Z",
+    "message": "Fatigue score registrado. Se generaron 5 micro-objetivo(s) para tus tareas activas.",
+    "microObjectives": [...],
+    "task": null,
+    "decompositionFailed": false
+  },
+  "error": null,
+  "status": 201
+}
+```
+
+## What happens after score submission
+
+The score drives two different code paths:
+
+| Score | Behaviour |
+|-------|-----------|
+| ≥ 4 (high fatigue) | Task Decomposer is triggered automatically. Active tasks are broken into 2–7 micro-objectives of ≤ 25 minutes each. |
+| ≤ 3 (low fatigue) | No decomposition. The student's active tasks are returned in their original form. |
+
+## Session history
+
+```
+GET /api/v1/sessions
+```
+
+Returns the student's last 30 sessions, ordered by `startedAt` descending (most recent first). Each item in the array contains `id`, `studentId`, `startedAt`, `endedAt`, and `isActive`.
+
+## The FatigueRecord data model
+
+Every valid score submission creates exactly one `FatigueRecord` in the database:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier of the record |
+| `fatigueScore` | integer (1–5) | The self-reported fatigue score |
+| `recordedAtUtc` | UTC timestamp | The moment the score was persisted |
+| `sessionId` | UUID | The session this score belongs to |
+| `studentId` | UUID | The student who submitted the score |
+
+## Session_Serializer and round-trip fidelity
+
+The Session_Serializer service ensures that every `Session` and `FatigueRecord` serialised to JSON can be deserialised back to an identical in-memory object without type coercion. The `fatigueScore` field is always stored as a JSON integer — never as a string like `"4"` or a float like `4.0`. Timestamps are preserved as ISO 8601 UTC strings throughout the serialisation round-trip.
+
+<Note>
+  Non-integer scores — including strings like `"3"`, decimals like `2.5`, booleans, and `null` — are rejected by the `FatigueSubmitDto` validation layer before any database write occurs. The `@IsInt()` decorator combined with `@Type(() => Number)` from `class-transformer` ensures strict integer-only acceptance. The rejection happens with HTTP `422 Unprocessable Entity` and no partial record is ever created.
+</Note>

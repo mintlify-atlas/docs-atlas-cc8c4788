@@ -1,0 +1,165 @@
+---
+title: "Run MindFlow with Docker Compose for local development"
+sidebarTitle: "Docker Compose"
+description: "Use the provided compose.yml to spin up PostgreSQL 18, the NestJS backend, and the Next.js frontend in isolated containers with a shared private network."
+---
+
+The `compose.yml` at the repository root orchestrates three services — a PostgreSQL 18 database, the NestJS backend, and the Next.js frontend — all running inside isolated containers on a shared private network. This is the recommended way to reproduce the full application stack locally without installing Node.js or PostgreSQL on your host machine. All inter-service communication happens over an internal Docker network; only the frontend is reachable from your browser.
+
+<Warning>
+  `compose.yml` is designed for local development only. Do **not** use it as a production deployment target. For production, deploy each service independently as described in the [Production guide](/deployment/production).
+</Warning>
+
+## Services overview
+
+| Service | Image / Build | Internal port | External access |
+|---|---|---|---|
+| `db` | `postgres:18-alpine` | `5432` | Not exposed — internal network only |
+| `backend` | Built from `apps/backend/Dockerfile` | `3001` | Not exposed — internal network only |
+| `frontend` | Built from `apps/frontend/Dockerfile` | `3000` | `http://localhost:3000` |
+
+### Network architecture
+
+All three services are attached to a Docker network declared with `internal: true`. This means no container can initiate outbound internet connections through this network, and neither `db` nor `backend` accepts traffic from outside the Docker environment. The frontend is the sole entry point for external traffic — matching the production topology where a reverse proxy or platform edge terminates public requests and forwards them to the frontend only.
+
+### Volume and data persistence
+
+PostgreSQL 18 stores its data directory at `/var/lib/postgresql/18/docker` inside the container — a path change introduced in PostgreSQL 18. For this reason the named volume `mindflow_pgdata` is mounted at `/var/lib/postgresql` (the parent directory), not at `/var/lib/postgresql/data` as was conventional through PostgreSQL 17. This ensures data persists across container restarts and remains compatible with future minor-version upgrades.
+
+## Starting the stack
+
+<Steps>
+  <Step title="Verify configuration">
+    Before building anything, confirm that Docker Compose can parse `compose.yml` and that all variable substitutions resolve correctly:
+
+    ```bash
+    docker compose config
+    ```
+
+    Review the output for any missing variables. At a minimum, ensure `DATABASE_URL`, `JWT_SECRET`, `FRONTEND_URL`, and `AUTH_SECRET` are set in your root `.env` file. See the [Environment Variables reference](/deployment/environment-variables) for details.
+  </Step>
+
+  <Step title="Build the images">
+    Build the backend and frontend Docker images from source. Docker will use the multi-stage `Dockerfile` in each application directory with the repo root as the build context:
+
+    ```bash
+    docker compose build
+    ```
+  </Step>
+
+  <Step title="Start all services">
+    Start all three containers in detached mode. Docker Compose will wait for the `db` health check to pass before starting the `backend`, and will start the `frontend` after the `backend` is running:
+
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+
+  <Step title="Run database migrations">
+    Apply Prisma migrations against the containerised PostgreSQL instance. This step is required on first startup and after any schema change:
+
+    ```bash
+    docker compose exec backend npm run prisma:migrate:deploy --workspace @mindflow/backend
+    ```
+  </Step>
+
+  <Step title="Follow the logs">
+    Watch the live log output from both the backend and frontend to confirm startup completed without errors:
+
+    ```bash
+    docker compose logs -f backend frontend
+    ```
+
+    Press `Ctrl+C` to stop tailing the logs without stopping the containers.
+  </Step>
+
+  <Step title="Open the application">
+    Navigate to [http://localhost:3000](http://localhost:3000) in your browser. The frontend proxies API requests to `http://backend:3001/api/v1` over the internal network.
+  </Step>
+</Steps>
+
+## compose.yml — services section
+
+```yaml
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # PostgreSQL 18+ uses PGDATA=/var/lib/postgresql/18/docker.
+      # The parent directory is mounted for persistence and future upgrades.
+      - mindflow_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    expose:
+      - "5432"
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY}
+      FRONTEND_URL: ${FRONTEND_URL}
+      PORT: ${PORT:-3001}
+    expose:
+      - "3001"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://backend:3001/api/v1}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_DEBUG: ${AUTH_DEBUG:-false}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://backend:3001/api/v1}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    expose:
+      - "3000"
+    depends_on:
+      - backend
+    networks:
+      - internal
+
+volumes:
+  mindflow_pgdata:
+    name: mindflow_pgdata
+
+networks:
+  internal:
+    internal: true
+```
+
+## Useful commands
+
+| Command | Description |
+|---|---|
+| `docker compose down` | Stop and remove all containers (data volume is preserved) |
+| `docker compose down -v` | Stop and remove containers **and** the data volume |
+| `docker compose exec backend <cmd>` | Run a command inside the running backend container |
+| `docker compose ps` | Show the status of all services |
+| `docker compose build --no-cache` | Force a full rebuild without the layer cache |
+
+<Warning>
+  Running `docker compose down -v` will permanently delete the `mindflow_pgdata` volume and all database data inside it. There is no undo. If you need to reset the database, prefer dropping and recreating the schema via Prisma migrations rather than destroying the volume.
+</Warning>
